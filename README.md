@@ -2,7 +2,7 @@
 The Half-Automated Webhook Flight Logger (SAW or JARVIS for the besties) is a GeoFS script that allows to pilots to log their flight via Webhook. This requires a shorter amount of time to log a flight.
 
 How to install it?
-Copy the main.js and paste it into tampermonkey
+Copy the [SAW.user.js](https://github.com/SAW-flight-logger/SAW-flight-logger/raw/refs/heads/main/SAW.user.js) and paste it into tampermonkey
 Hop in GeoFS
 Do right click and inspect
 Go to console
