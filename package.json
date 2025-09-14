@@ -1,0 +1,17 @@
+{
+  "name": "saw-flight-logger",
+  "version": "1.0.0",
+  "description": "The Half-Automated Webhook Flight Logger (SAW or JARVIS for the besties) is a GeoFS script that allows to pilots to log their flight via Webhook. This requires a shorter amount of time to log a flight.",
+  "main": "SAW.user.js",
+  "scripts": {
+    "format": "prettier --write *.js *.md",
+    "format:check": "prettier --check *.js *.md",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "prettier": "^3.6.2"
+  }
+}
