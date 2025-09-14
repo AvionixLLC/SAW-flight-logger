@@ -12,18 +12,19 @@
 (function () {
   'use strict';
 
-  const WEBHOOK_URL = "https://discord.com/api/webhooks/1406257491200966676/uo2BElGKf3Z2OTy2KGskd-cuIzKdiJSlgkiYUd9Hd0_622E0xE88Xigmqp4we6Woepxl";
-  const STORAGE_KEY = "geofs_flight_logger_session";
-  const AIRLINES_KEY = "geofs_flight_logger_airlines";
-  const LAST_AIRLINE_KEY = "geofs_flight_logger_last_airline";
-  const TERMS_AGREED_KEY = "geofs_flight_logger_terms_agreed";
-  const LAST_POSITION_KEY = "geofs_flight_logger_last_position";
-  const TELEPORT_WARNINGS_KEY = "geofs_flight_logger_teleport_warnings";
+  const WEBHOOK_URL =
+    'https://discord.com/api/webhooks/1406257491200966676/uo2BElGKf3Z2OTy2KGskd-cuIzKdiJSlgkiYUd9Hd0_622E0xE88Xigmqp4we6Woepxl';
+  const STORAGE_KEY = 'geofs_flight_logger_session';
+  const AIRLINES_KEY = 'geofs_flight_logger_airlines';
+  const LAST_AIRLINE_KEY = 'geofs_flight_logger_last_airline';
+  const TERMS_AGREED_KEY = 'geofs_flight_logger_terms_agreed';
+  const LAST_POSITION_KEY = 'geofs_flight_logger_last_position';
+  const TELEPORT_WARNINGS_KEY = 'geofs_flight_logger_teleport_warnings';
 
   let flightStarted = false;
   let flightStartTime = null;
-  let departureICAO = "UNKNOWN";
-  let arrivalICAO = "UNKNOWN";
+  let departureICAO = 'UNKNOWN';
+  let arrivalICAO = 'UNKNOWN';
   let hasLanded = false;
   let monitorInterval = null;
   let firstGroundContact = false;
@@ -34,11 +35,11 @@
   let arrivalAirportData = null;
 
   // Enhanced landing stats variables
-  let oldAGL = 0;
-  let newAGL = 0;
-  let calVertS = 0;
-  let oldTime = Date.now();
-  let newTime = Date.now();
+  let previousAGL = 0;
+  let currentAGL = 0;
+  let calculatedVerticalSpeed = 0;
+  let previousTime = Date.now();
+  let currentTime = Date.now();
   let bounces = 0;
   let isGrounded = true;
   let justLanded = false;
@@ -67,6 +68,12 @@
   let isAnalyzingResume = false;
   let lastTeleportCheck = Date.now();
 
+  /**
+   * Saves the aircraft's current position to localStorage for teleportation detection
+   * @param {number} lat - Latitude coordinate
+   * @param {number} lon - Longitude coordinate
+   * @param {number} alt - Altitude in meters
+   */
   function saveLastPosition(lat, lon, alt) {
     const position = { lat, lon, alt, timestamp: Date.now() };
     lastPosition = position;
@@ -84,11 +91,23 @@
     return warnings;
   }
 
+  /**
+   * Calculates the great circle distance between two geographical points
+   * @param {number} lat1 - First point latitude
+   * @param {number} lon1 - First point longitude
+   * @param {number} lat2 - Second point latitude
+   * @param {number} lon2 - Second point longitude
+   * @returns {number} Distance in meters
+   */
   function getDistance(lat1, lon1, lat2, lon2) {
     const R = 6371000;
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLon / 2) ** 2;
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
   }
@@ -118,7 +137,9 @@
 
       // Sudden drop of more than 35% in one step is suspicious
       if (speedDrop > SPEED_DROP_THRESHOLD) {
-        console.log(`🚨 Sudden speed drop detected: ${prevSpeed.toFixed(1)} -> ${currSpeed.toFixed(1)} m/s (${(speedDrop*100).toFixed(1)}% drop)`);
+        console.log(
+          `🚨 Sudden speed drop detected: ${prevSpeed.toFixed(1)} -> ${currSpeed.toFixed(1)} m/s (${(speedDrop * 100).toFixed(1)}% drop)`
+        );
         return true;
       }
     }
@@ -126,9 +147,13 @@
     return false;
   }
 
+  /**
+   * Analyzes movement patterns to detect potential teleportation
+   * @returns {boolean} True if movement patterns are consistent (no teleportation detected)
+   */
   function analyzeMovementConsistency() {
     if (positionHistory.length < 5 || speedHistory.length < 5) {
-      console.log("❓ Insufficient data for movement analysis");
+      console.log('❓ Insufficient data for movement analysis');
       return false;
     }
 
@@ -152,33 +177,42 @@
     const headingConsistent = maxHeadingChange < MAX_HEADING_VARIANCE;
 
     // Analyze speed patterns
-    const avgSpeed = speedHistory.reduce((a, b) => a + b, 0) / speedHistory.length;
+    const avgSpeed =
+      speedHistory.reduce((a, b) => a + b, 0) / speedHistory.length;
     const maxSpeed = Math.max(...speedHistory);
     const minSpeed = Math.min(...speedHistory.filter(s => s > 1)); // Ignore very low speeds
 
     const speedReasonable = maxSpeed < MAX_SPEED_MPS && avgSpeed > 2;
-    const speedConsistent = minSpeed > 0 && (maxSpeed / Math.max(minSpeed, 1)) < 6;
+    const speedConsistent =
+      minSpeed > 0 && maxSpeed / Math.max(minSpeed, 1) < 6;
 
     // Check for teleportation speed signature
     const hasSuddenSpeedDrop = detectSuddenSpeedDrop();
 
-    const isConsistent = headingConsistent && speedReasonable && speedConsistent && !hasSuddenSpeedDrop;
+    const isConsistent =
+      headingConsistent &&
+      speedReasonable &&
+      speedConsistent &&
+      !hasSuddenSpeedDrop;
 
-    console.log(`📊 Movement Analysis: Heading OK=${headingConsistent} (max change: ${maxHeadingChange.toFixed(1)}°), Speed OK=${speedReasonable}, Speed Consistent=${speedConsistent}, No Speed Drop=${!hasSuddenSpeedDrop}, Avg Speed=${avgSpeed.toFixed(1)}m/s`);
+    console.log(
+      `📊 Movement Analysis: Heading OK=${headingConsistent} (max change: ${maxHeadingChange.toFixed(1)}°), Speed OK=${speedReasonable}, Speed Consistent=${speedConsistent}, No Speed Drop=${!hasSuddenSpeedDrop}, Avg Speed=${avgSpeed.toFixed(1)}m/s`
+    );
 
     return isConsistent;
   }
 
   function checkTeleportation(currentLat, currentLon, currentAlt) {
     const now = Date.now();
-    const currentSpeed = (geofs?.animation?.values?.groundSpeedKnt || 0) * 0.514444; // Convert to m/s
+    const currentSpeed =
+      (geofs?.animation?.values?.groundSpeedKnt || 0) * 0.514444; // Convert to m/s
 
     // Skip during initial game load
-    if (isGameLoading && (now - gameLoadTime) < 10000) {
+    if (isGameLoading && now - gameLoadTime < 10000) {
       return false;
     } else if (isGameLoading) {
       isGameLoading = false;
-      console.log("🎮 Game loading complete - teleportation detection active");
+      console.log('🎮 Game loading complete - teleportation detection active');
     }
 
     // Post-resume analysis period - ONLY check for consistent movement after resume
@@ -188,15 +222,32 @@
       if (timeSinceResume < RESUME_ANALYSIS_TIME) {
         // Collect movement data during analysis period
         if (lastPosition) {
-          const distance = getDistance(lastPosition.lat, lastPosition.lon, currentLat, currentLon);
+          const distance = getDistance(
+            lastPosition.lat,
+            lastPosition.lon,
+            currentLat,
+            currentLon
+          );
           if (distance > MIN_MOVEMENT_THRESHOLD) {
-            positionHistory.push({ lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now });
+            positionHistory.push({
+              lat: currentLat,
+              lon: currentLon,
+              alt: currentAlt,
+              timestamp: now,
+            });
             speedHistory.push(currentSpeed);
             saveLastPosition(currentLat, currentLon, currentAlt);
           }
         } else {
           saveLastPosition(currentLat, currentLon, currentAlt);
-          positionHistory = [{ lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now }];
+          positionHistory = [
+            {
+              lat: currentLat,
+              lon: currentLon,
+              alt: currentAlt,
+              timestamp: now,
+            },
+          ];
           speedHistory = [currentSpeed];
         }
         return false; // Don't check for teleportation during analysis
@@ -205,7 +256,9 @@
         isAnalyzingResume = false;
         const movementConsistent = analyzeMovementConsistency();
 
-        console.log(`🔍 Post-resume analysis complete: Movement consistent = ${movementConsistent}`);
+        console.log(
+          `🔍 Post-resume analysis complete: Movement consistent = ${movementConsistent}`
+        );
 
         if (!movementConsistent) {
           // Movement was inconsistent - trigger teleportation detection
@@ -215,21 +268,35 @@
             incrementTeleportWarnings();
             currentFlightTeleported = true;
 
-            showToast("⚠️ TELEPORTATION DETECTED!<br>🔍 Inconsistent movement after flight resume<br>📝 First warning - Flight continues", 'warning', 7000);
-            console.log(`⚠️ First teleportation warning - inconsistent post-resume movement`);
+            showToast(
+              '⚠️ TELEPORTATION DETECTED!<br>🔍 Inconsistent movement after flight resume<br>📝 First warning - Flight continues',
+              'warning',
+              7000
+            );
+            console.log(
+              `⚠️ First teleportation warning - inconsistent post-resume movement`
+            );
 
             return false;
           } else {
-            showToast("🚨 TELEPORTATION DETECTED!<br>❌ Multiple violations - Flight terminated", 'warning', 5000);
-            console.log(`🚨 Second teleportation violation - terminating flight`);
+            showToast(
+              '🚨 TELEPORTATION DETECTED!<br>❌ Multiple violations - Flight terminated',
+              'warning',
+              5000
+            );
+            console.log(
+              `🚨 Second teleportation violation - terminating flight`
+            );
 
             if (flightStarted) {
-              endFlight("TELEPORTATION");
+              endFlight('TELEPORTATION');
             }
             return true;
           }
         } else {
-          console.log("✅ Post-resume movement analysis passed - legitimate flight");
+          console.log(
+            '✅ Post-resume movement analysis passed - legitimate flight'
+          );
         }
       }
     }
@@ -240,29 +307,43 @@
 
     if (!lastPosition) {
       saveLastPosition(currentLat, currentLon, currentAlt);
-      positionHistory = [{ lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now }];
+      positionHistory = [
+        { lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now },
+      ];
       speedHistory = [currentSpeed];
       return false;
     }
 
     if (now - lastPosition.timestamp > 30000) {
-      console.log("🔄 Position data expired - resetting detection");
+      console.log('🔄 Position data expired - resetting detection');
       saveLastPosition(currentLat, currentLon, currentAlt);
-      positionHistory = [{ lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now }];
+      positionHistory = [
+        { lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now },
+      ];
       speedHistory = [currentSpeed];
       gameLoadTime = now;
       isGameLoading = true;
       return false;
     }
 
-    const distance = getDistance(lastPosition.lat, lastPosition.lon, currentLat, currentLon);
+    const distance = getDistance(
+      lastPosition.lat,
+      lastPosition.lon,
+      currentLat,
+      currentLon
+    );
     const altDiff = Math.abs(currentAlt - lastPosition.alt);
     const timeDiff = (now - lastPosition.timestamp) / 1000;
     const calculatedSpeed = distance / Math.max(timeDiff, 0.1);
 
     // Update position history
     if (distance > MIN_MOVEMENT_THRESHOLD) {
-      positionHistory.push({ lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now });
+      positionHistory.push({
+        lat: currentLat,
+        lon: currentLon,
+        alt: currentAlt,
+        timestamp: now,
+      });
       speedHistory.push(currentSpeed);
       saveLastPosition(currentLat, currentLon, currentAlt);
 
@@ -274,18 +355,25 @@
     }
 
     // Check for obvious teleportation (large distance/speed jumps during regular flight)
-    const isSuspicious = distance > MAX_RESPAWN_DISTANCE || altDiff > MAX_RESPAWN_DISTANCE || calculatedSpeed > MAX_SPEED_MPS;
+    const isSuspicious =
+      distance > MAX_RESPAWN_DISTANCE ||
+      altDiff > MAX_RESPAWN_DISTANCE ||
+      calculatedSpeed > MAX_SPEED_MPS;
 
     if (isSuspicious) {
       // Verify if this is legitimate high-speed movement
       const movementConsistent = analyzeMovementConsistency();
 
       if (movementConsistent && calculatedSpeed < MAX_SPEED_MPS * 1.5) {
-        console.log(`✈️ High-speed but consistent flight: ${calculatedSpeed.toFixed(1)}m/s`);
+        console.log(
+          `✈️ High-speed but consistent flight: ${calculatedSpeed.toFixed(1)}m/s`
+        );
         return false;
       }
 
-      console.log(`🚨 Teleportation detected during active flight: ${distance.toFixed(1)}m, ${calculatedSpeed.toFixed(1)}m/s`);
+      console.log(
+        `🚨 Teleportation detected during active flight: ${distance.toFixed(1)}m, ${calculatedSpeed.toFixed(1)}m/s`
+      );
 
       const currentWarnings = getTeleportWarnings();
 
@@ -293,22 +381,36 @@
         incrementTeleportWarnings();
         currentFlightTeleported = true;
 
-        showToast("⚠️ TELEPORTATION DETECTED!<br>🔄 First warning - Flight continues<br>📝 This will be noted in your report", 'warning', 6000);
+        showToast(
+          '⚠️ TELEPORTATION DETECTED!<br>🔄 First warning - Flight continues<br>📝 This will be noted in your report',
+          'warning',
+          6000
+        );
         console.log(`⚠️ First teleportation warning during active flight`);
 
         // Reset tracking
-        positionHistory = [{ lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now }];
+        positionHistory = [
+          { lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now },
+        ];
         speedHistory = [currentSpeed];
         return false;
       } else {
-        showToast("🚨 TELEPORTATION DETECTED!<br>❌ Multiple violations - Flight terminated", 'warning', 5000);
-        console.log(`🚨 Multiple teleportation violations - terminating flight`);
+        showToast(
+          '🚨 TELEPORTATION DETECTED!<br>❌ Multiple violations - Flight terminated',
+          'warning',
+          5000
+        );
+        console.log(
+          `🚨 Multiple teleportation violations - terminating flight`
+        );
 
         if (flightStarted) {
-          endFlight("TELEPORTATION");
+          endFlight('TELEPORTATION');
         }
 
-        positionHistory = [{ lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now }];
+        positionHistory = [
+          { lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now },
+        ];
         speedHistory = [currentSpeed];
         return true;
       }
@@ -317,36 +419,59 @@
     return false;
   }
 
-  function endFlight(reason = "NORMAL") {
+  /**
+   * Ends the current flight logging session and sends data to Discord webhook
+   * @param {string} reason - Reason for ending flight ('NORMAL', 'CRASHED', 'TELEPORT', etc.)
+   */
+  function endFlight(reason = 'NORMAL') {
     if (!flightStarted) return;
 
     const now = Date.now();
     const values = geofs?.animation?.values;
 
     if (values) {
-      const [lat, lon] = geofs.aircraft.instance.llaLocation || [values.latitude, values.longitude];
+      const [lat, lon] = geofs.aircraft.instance.llaLocation || [
+        values.latitude,
+        values.longitude,
+      ];
 
-      if (reason === "TELEPORTATION") {
-        arrivalICAO = "TELEPORT";
+      if (reason === 'TELEPORTATION') {
+        arrivalICAO = 'TELEPORT';
         arrivalAirportData = null;
       } else {
         const nearestAirport = getNearestAirport(lat, lon);
-        arrivalICAO = nearestAirport ? nearestAirport.icao : promptForAirportICAO("Arrival", lat, lon);
+        arrivalICAO = nearestAirport
+          ? nearestAirport.icao
+          : promptForAirportICAO('Arrival', lat, lon);
         arrivalAirportData = nearestAirport;
       }
 
-      const vs = reason === "TELEPORTATION" ? 0 : (calVertS !== 0 ? calVertS : values.verticalSpeed);
-      const g = reason === "TELEPORTATION" ? 0 : (values.accZ / 9.80665).toFixed(2);
-      const gs = values.groundSpeedKnt?.toFixed(1) || "0";
-      const tas = geofs.aircraft.instance.trueAirSpeed?.toFixed(1) || "N/A";
-      const quality = reason === "TELEPORTATION" ? "TELEPORT" :
-                     (reason === "CRASH" ? "CRASH" :
-                     (vs > -60) ? "BUTTER" : (vs > -800) ? "HARD" : "CRASH");
+      const vs =
+        reason === 'TELEPORTATION'
+          ? 0
+          : calculatedVerticalSpeed !== 0
+            ? calculatedVerticalSpeed
+            : values.verticalSpeed;
+      const g =
+        reason === 'TELEPORTATION' ? 0 : (values.accZ / 9.80665).toFixed(2);
+      const gs = values.groundSpeedKnt?.toFixed(1) || '0';
+      const tas = geofs.aircraft.instance.trueAirSpeed?.toFixed(1) || 'N/A';
+      const quality =
+        reason === 'TELEPORTATION'
+          ? 'TELEPORT'
+          : reason === 'CRASH'
+            ? 'CRASH'
+            : vs > -60
+              ? 'BUTTER'
+              : vs > -800
+                ? 'HARD'
+                : 'CRASH';
 
-      const baseCallsign = callsignInput.value.trim() || "Unknown";
+      const baseCallsign = callsignInput.value.trim() || 'Unknown';
       const airlineICAO = getCurrentAirlineICAO();
-      const pilot = baseCallsign.toUpperCase().startsWith(airlineICAO) ?
-        baseCallsign : `${airlineICAO}${baseCallsign}`;
+      const pilot = baseCallsign.toUpperCase().startsWith(airlineICAO)
+        ? baseCallsign
+        : `${airlineICAO}${baseCallsign}`;
       const aircraft = getAircraftName();
       const durationMin = Math.round((now - flightStartTime) / 60000);
 
@@ -355,7 +480,8 @@
       const formattedDuration = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
 
       sendLogToDiscord({
-        pilot, aircraft,
+        pilot,
+        aircraft,
         takeoff: flightStartTime,
         landing: now,
         dep: departureICAO,
@@ -366,7 +492,7 @@
         gs: gs,
         ktrue: tas,
         landingQuality: quality,
-        teleportWarning: currentFlightTeleported && reason !== "TELEPORTATION"
+        teleportWarning: currentFlightTeleported && reason !== 'TELEPORTATION',
       });
     }
 
@@ -379,33 +505,36 @@
     }
   }
 
-// ====== Load airports database ======
-fetch("https://raw.githubusercontent.com/mwgg/Airports/master/airports.json")
-  .then(r => r.json())
-  .then(data => {
-    airportsDB = Object.entries(data).map(([icao, info]) => ({
-      icao,
-      lat: info.lat,
-      lon: info.lon,
-      tz: info.tz || null,
-      name: info.name || "",
-      city: info.city || "",
-      country: info.country || ""
-    }));
-    console.log(`✅ Loaded ${airportsDB.length} airports`);
-  })
-  .catch(err => console.error("❌ Airport DB load failed:", err));
+  // ====== Load airports database ======
+  fetch('https://raw.githubusercontent.com/mwgg/Airports/master/airports.json')
+    .then(r => r.json())
+    .then(data => {
+      airportsDB = Object.entries(data).map(([icao, info]) => ({
+        icao,
+        lat: info.lat,
+        lon: info.lon,
+        tz: info.tz || null,
+        name: info.name || '',
+        city: info.city || '',
+        country: info.country || '',
+      }));
+      console.log(`✅ Loaded ${airportsDB.length} airports`);
+    })
+    .catch(err => console.error('❌ Airport DB load failed:', err));
 
   function getNearestAirport(lat, lon) {
-    if (!airportsDB.length) return { icao: "UNKNOWN" };
-    let nearest = null, minDist = Infinity;
+    if (!airportsDB.length) return { icao: 'UNKNOWN' };
+    let nearest = null,
+      minDist = Infinity;
     for (const ap of airportsDB) {
-      const dLat = (ap.lat - lat) * Math.PI / 180;
-      const dLon = (ap.lon - lon) * Math.PI / 180;
-      const a = Math.sin(dLat/2) ** 2 +
-        Math.cos(lat * Math.PI/180) * Math.cos(ap.lat * Math.PI/180) *
-        Math.sin(dLon/2) ** 2;
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      const dLat = ((ap.lat - lat) * Math.PI) / 180;
+      const dLon = ((ap.lon - lon) * Math.PI) / 180;
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos((lat * Math.PI) / 180) *
+          Math.cos((ap.lat * Math.PI) / 180) *
+          Math.sin(dLon / 2) ** 2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
       const dist = 6371 * c;
       if (dist < minDist) {
         minDist = dist;
@@ -421,16 +550,18 @@ fetch("https://raw.githubusercontent.com/mwgg/Airports/master/airports.json")
       flightStarted,
       flightStartTime,
       departureICAO,
-      callsign: callsignInput?.value.trim() || "Unknown",
+      callsign: callsignInput?.value.trim() || 'Unknown',
       aircraft: getAircraftName(),
       firstGroundContact,
       departureAirportData,
       currentFlightTeleported,
-      selectedAirline: airlineSelect?.options[airlineSelect?.selectedIndex]?.getAttribute('data-airline-name') || null,
-      timestamp: Date.now()
+      selectedAirline:
+        airlineSelect?.options[airlineSelect?.selectedIndex]?.getAttribute(
+          'data-airline-name'
+        ) || null,
+      timestamp: Date.now(),
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-    console.log("💾 Flight session saved");
   }
 
   function loadSession() {
@@ -444,14 +575,16 @@ fetch("https://raw.githubusercontent.com/mwgg/Airports/master/airports.json")
 
   function promptForAirportICAO(type, lat, lon) {
     const locationStr = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-    const icao = prompt(`❓ ${type} airport not found in database.\nLocation: ${locationStr}\n\nPlease enter the ICAO code manually (or leave empty for UNKNOWN):`);
-    return icao ? icao.toUpperCase().trim() : "UNKNOWN";
+    const icao = prompt(
+      `❓ ${type} airport not found in database.\nLocation: ${locationStr}\n\nPlease enter the ICAO code manually (or leave empty for UNKNOWN):`
+    );
+    return icao ? icao.toUpperCase().trim() : 'UNKNOWN';
   }
 
-function getAircraftName() {
-  let raw = geofs?.aircraft?.instance?.aircraftRecord?.name || "Unknown";
-  return raw.replace(/^\([^)]*\)\s*/, "");
-}
+  function getAircraftName() {
+    let raw = geofs?.aircraft?.instance?.aircraftRecord?.name || 'Unknown';
+    return raw.replace(/^\([^)]*\)\s*/, '');
+  }
 
   function saveAirlines(airlines) {
     localStorage.setItem(AIRLINES_KEY, JSON.stringify(airlines));
@@ -463,12 +596,12 @@ function getAircraftName() {
       const airlines = JSON.parse(stored);
       const firstKey = Object.keys(airlines)[0];
       if (firstKey && typeof airlines[firstKey] === 'string') {
-        console.log("📦 Upgrading airline data format...");
+        console.log('📦 Upgrading airline data format...');
         const upgraded = {};
         for (const [name, webhook] of Object.entries(airlines)) {
           upgraded[name] = {
             webhook: webhook,
-            icao: name === 'Default' ? 'GFS' : 'UNK'
+            icao: name === 'Default' ? 'GFS' : 'UNK',
           };
         }
         saveAirlines(upgraded);
@@ -477,10 +610,10 @@ function getAircraftName() {
       return airlines;
     }
     return {
-      "Default": {
+      Default: {
         webhook: WEBHOOK_URL,
-        icao: "GFS"
-      }
+        icao: 'GFS',
+      },
     };
   }
 
@@ -493,22 +626,22 @@ function getAircraftName() {
   }
 
   function addNewAirline() {
-    const name = prompt("Enter airline name:");
+    const name = prompt('Enter airline name:');
     if (!name) return;
 
-    const icao = prompt("Enter airline ICAO code (e.g., EVA, CAL, CPA):");
+    const icao = prompt('Enter airline ICAO code (e.g., EVA, CAL, CPA):');
     if (!icao) return;
 
-    const webhook = prompt("Enter Discord webhook URL:");
-    if (!webhook || !webhook.includes("discord.com/api/webhooks/")) {
-      alert("Invalid webhook URL!");
+    const webhook = prompt('Enter Discord webhook URL:');
+    if (!webhook || !webhook.includes('discord.com/api/webhooks/')) {
+      alert('Invalid webhook URL!');
       return;
     }
 
     const airlines = loadAirlines();
     airlines[name] = {
       webhook: webhook,
-      icao: icao.toUpperCase().trim()
+      icao: icao.toUpperCase().trim(),
     };
     saveAirlines(airlines);
     updateAirlineSelect();
@@ -520,14 +653,16 @@ function getAircraftName() {
     const airlineNames = Object.keys(airlines);
 
     if (airlineNames.length <= 1) {
-      alert("Cannot remove the last airline!");
+      alert('Cannot remove the last airline!');
       return;
     }
 
-    const airlineList = airlineNames.map(name => {
-      const icao = airlines[name].icao || airlines[name];
-      return typeof airlines[name] === 'object' ? `${name} (${icao})` : name;
-    }).join(", ");
+    const airlineList = airlineNames
+      .map(name => {
+        const icao = airlines[name].icao || airlines[name];
+        return typeof airlines[name] === 'object' ? `${name} (${icao})` : name;
+      })
+      .join(', ');
 
     const selected = prompt(`Enter airline name to remove:\n${airlineList}`);
     if (selected && airlines[selected]) {
@@ -536,7 +671,7 @@ function getAircraftName() {
       updateAirlineSelect();
       alert(`Removed airline: ${selected}`);
     } else {
-      alert("Airline not found!");
+      alert('Airline not found!');
     }
   }
 
@@ -544,10 +679,10 @@ function getAircraftName() {
     const airlines = loadAirlines();
     const lastAirline = loadLastAirline();
 
-    airlineSelect.innerHTML = "";
+    airlineSelect.innerHTML = '';
 
     for (const [name, airlineData] of Object.entries(airlines)) {
-      const option = document.createElement("option");
+      const option = document.createElement('option');
 
       if (typeof airlineData === 'string') {
         option.value = airlineData;
@@ -580,7 +715,6 @@ function getAircraftName() {
     const airlineName = selectedOption.getAttribute('data-airline-name');
     if (airlineName) {
       saveLastAirline(airlineName);
-      console.log(`💾 Saved airline selection: ${airlineName}`);
     }
   }
 
@@ -591,7 +725,9 @@ function getAircraftName() {
 
     if (airlineName && airlines[airlineName]) {
       const airlineData = airlines[airlineName];
-      return typeof airlineData === 'object' ? airlineData.webhook : airlineData;
+      return typeof airlineData === 'object'
+        ? airlineData.webhook
+        : airlineData;
     }
 
     return airlineSelect.value || WEBHOOK_URL;
@@ -616,10 +752,15 @@ function getAircraftName() {
     if (airportData && airportData.tz) {
       timeZone = airportData.tz;
       const date = new Date(timestamp);
-      const timezoneName = date.toLocaleDateString('en', {
-        timeZone: timeZone,
-        timeZoneName: 'short'
-      }).split(', ')[1] || timeZone.split('/')[1] || 'LT';
+      const timezoneName =
+        date
+          .toLocaleDateString('en', {
+            timeZone: timeZone,
+            timeZoneName: 'short',
+          })
+          .split(', ')[1] ||
+        timeZone.split('/')[1] ||
+        'LT';
       suffix = timezoneName;
     }
 
@@ -630,87 +771,107 @@ function getAircraftName() {
       year: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
-      hour12: false
+      hour12: false,
     });
 
     return `${fmt.format(new Date(timestamp))} ${suffix}`;
   }
 
   function sendLogToDiscord(data) {
-    const takeoffTime = formatTimeWithTimezone(data.takeoff, departureAirportData);
-    const landingTime = formatTimeWithTimezone(data.landing, arrivalAirportData);
+    const takeoffTime = formatTimeWithTimezone(
+      data.takeoff,
+      departureAirportData
+    );
+    const landingTime = formatTimeWithTimezone(
+      data.landing,
+      arrivalAirportData
+    );
 
     let embedColor;
-    switch(data.landingQuality) {
-      case "BUTTER": embedColor = 0x00FF00; break;
-      case "HARD": embedColor = 0xFF8000; break;
-      case "CRASH": embedColor = 0xFF0000; break;
-      case "TELEPORT": embedColor = 0xFF00FF; break;
-      default: embedColor = 0x0099FF; break;
+    switch (data.landingQuality) {
+      case 'BUTTER':
+        embedColor = 0x00ff00;
+        break;
+      case 'HARD':
+        embedColor = 0xff8000;
+        break;
+      case 'CRASH':
+        embedColor = 0xff0000;
+        break;
+      case 'TELEPORT':
+        embedColor = 0xff00ff;
+        break;
+      default:
+        embedColor = 0x0099ff;
+        break;
     }
 
     if (data.teleportWarning) {
-      embedColor = 0xFFAA00;
+      embedColor = 0xffaa00;
     }
 
     const fields = [
       {
-        name: "✈️ Flight Information",
-        value: `**Flight no.**: ${data.pilot}\n**Pilot name**: ${geofs?.userRecord?.callsign || "Unknown"}\n**Aircraft**: ${data.aircraft}`,
-        inline: false
+        name: '✈️ Flight Information',
+        value: `**Flight no.**: ${data.pilot}\n**Pilot name**: ${geofs?.userRecord?.callsign || 'Unknown'}\n**Aircraft**: ${data.aircraft}`,
+        inline: false,
       },
       {
-        name: "📍 Route",
+        name: '📍 Route',
         value: `**Departure**: ${data.dep}\n**Arrival**: ${data.arr}`,
-        inline: true
+        inline: true,
       },
       {
-        name: "⏱️ Duration",
+        name: '⏱️ Duration',
         value: `**Flight Time**: ${data.duration}`,
-        inline: true
+        inline: true,
       },
       {
-        name: "📊 Flight Data",
+        name: '📊 Flight Data',
         value: `**V/S**: ${data.vs} fpm\n**G-Force**: ${data.gforce}\n**TAS**: ${data.ktrue} kts\n**GS**: ${data.gs} kts`,
-        inline: true
+        inline: true,
       },
       {
-        name: "🏁 Landing Quality",
+        name: '🏁 Landing Quality',
         value: `**${data.landingQuality}**`,
-        inline: true
+        inline: true,
       },
       {
-        name: "🕓 Times",
+        name: '🕓 Times',
         value: `**Takeoff**: ${takeoffTime}\n**Landing**: ${landingTime}`,
-        inline: false
-      }
+        inline: false,
+      },
     ];
 
     if (data.teleportWarning) {
       fields.push({
-        name: "⚠️ Flight Integrity Notice",
-        value: "**Teleportation detected during flight**\nThis flight contained position anomalies that may affect data accuracy.",
-        inline: false
+        name: '⚠️ Flight Integrity Notice',
+        value:
+          '**Teleportation detected during flight**\nThis flight contained position anomalies that may affect data accuracy.',
+        inline: false,
       });
     }
 
     const message = {
-      embeds: [{
-        title: "🛫 Flight Report - GeoFS",
-        color: embedColor,
-        fields: fields,
-        timestamp: new Date().toISOString(),
-        footer: {
-          text: "GeoFS Flight Logger"
-        }
-      }]
+      embeds: [
+        {
+          title: '🛫 Flight Report - GeoFS',
+          color: embedColor,
+          fields: fields,
+          timestamp: new Date().toISOString(),
+          footer: {
+            text: 'GeoFS Flight Logger',
+          },
+        },
+      ],
     };
 
     fetch(getCurrentWebhookURL(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(message)
-    }).then(() => console.log("✅ Flight log sent"))
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(message),
+    })
+      .then(() => console.log('✅ Flight log sent'))
       .catch(console.error);
   }
 
@@ -730,37 +891,65 @@ function getAircraftName() {
       boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
       opacity: '0',
       transform: 'translateX(100%)',
-      transition: 'all 0.3s ease-in-out'
+      transition: 'all 0.3s ease-in-out',
     });
-    switch(type) {
-      case 'crash': toast.style.background = 'linear-gradient(135deg, #ff4444, #cc0000)'; break;
-      case 'success': toast.style.background = 'linear-gradient(135deg, #00ff44, #00cc00)'; break;
-      case 'warning': toast.style.background = 'linear-gradient(135deg, #ffaa00, #ff8800)'; break;
-      default: toast.style.background = 'linear-gradient(135deg, #0099ff, #0066cc)';
+    switch (type) {
+      case 'crash':
+        toast.style.background = 'linear-gradient(135deg, #ff4444, #cc0000)';
+        break;
+      case 'success':
+        toast.style.background = 'linear-gradient(135deg, #00ff44, #00cc00)';
+        break;
+      case 'warning':
+        toast.style.background = 'linear-gradient(135deg, #ffaa00, #ff8800)';
+        break;
+      default:
+        toast.style.background = 'linear-gradient(135deg, #0099ff, #0066cc)';
     }
     toast.innerHTML = message;
     document.body.appendChild(toast);
-    setTimeout(() => { toast.style.opacity = '1'; toast.style.transform = 'translateX(0)'; }, 10);
+    setTimeout(() => {
+      toast.style.opacity = '1';
+      toast.style.transform = 'translateX(0)';
+    }, 10);
     setTimeout(() => {
       toast.style.opacity = '0';
       toast.style.transform = 'translateX(100%)';
-      setTimeout(() => { if (document.body.contains(toast)) document.body.removeChild(toast); }, 300);
+      setTimeout(() => {
+        if (document.body.contains(toast)) document.body.removeChild(toast);
+      }, 300);
     }, duration);
   }
 
   function updateCalVertS() {
-    if ((typeof geofs.animation.values != 'undefined' &&
-         !geofs.isPaused()) &&
-        ((geofs.animation.values.altitude !== undefined && geofs.animation.values.groundElevationFeet !== undefined) ?
-         ((geofs.animation.values.altitude - geofs.animation.values.groundElevationFeet) +
-          (geofs.aircraft.instance.collisionPoints[geofs.aircraft.instance.collisionPoints.length - 2].worldPosition[2]*3.2808399)) : 'N/A') !== oldAGL) {
-      newAGL = (geofs.animation.values.altitude !== undefined && geofs.animation.values.groundElevationFeet !== undefined) ?
-               ((geofs.animation.values.altitude - geofs.animation.values.groundElevationFeet) +
-                (geofs.aircraft.instance.collisionPoints[geofs.aircraft.instance.collisionPoints.length - 2].worldPosition[2]*3.2808399)) : 'N/A';
-      newTime = Date.now();
-      calVertS = (newAGL - oldAGL) * (60000/(newTime - oldTime));
-      oldAGL = newAGL;
-      oldTime = Date.now();
+    if (
+      typeof geofs.animation.values != 'undefined' &&
+      !geofs.isPaused() &&
+      (geofs.animation.values.altitude !== undefined &&
+      geofs.animation.values.groundElevationFeet !== undefined
+        ? geofs.animation.values.altitude -
+          geofs.animation.values.groundElevationFeet +
+          geofs.aircraft.instance.collisionPoints[
+            geofs.aircraft.instance.collisionPoints.length - 2
+          ].worldPosition[2] *
+            3.2808399
+        : 'N/A') !== previousAGL
+    ) {
+      currentAGL =
+        geofs.animation.values.altitude !== undefined &&
+        geofs.animation.values.groundElevationFeet !== undefined
+          ? geofs.animation.values.altitude -
+            geofs.animation.values.groundElevationFeet +
+            geofs.aircraft.instance.collisionPoints[
+              geofs.aircraft.instance.collisionPoints.length - 2
+            ].worldPosition[2] *
+              3.2808399
+          : 'N/A';
+      currentTime = Date.now();
+      calculatedVerticalSpeed =
+        (currentAGL - previousAGL) * (60000 / (currentTime - previousTime));
+      previousAGL = currentAGL;
+      previousTime = Date.now();
     }
   }
 
@@ -771,7 +960,10 @@ function getAircraftName() {
     const altitudeFt = values.altitude * 3.28084;
     const terrainFt = geofs.api?.map?.getTerrainAltitude?.() * 3.28084 || 0;
     const agl = altitudeFt - terrainFt;
-    const [lat, lon] = geofs.aircraft.instance.llaLocation || [values.latitude, values.longitude];
+    const [lat, lon] = geofs.aircraft.instance.llaLocation || [
+      values.latitude,
+      values.longitude,
+    ];
     const now = Date.now();
 
     // Check for teleportation
@@ -780,13 +972,19 @@ function getAircraftName() {
     }
 
     // Enhanced AGL calculation
-    const enhancedAGL = (values.altitude !== undefined && values.groundElevationFeet !== undefined) ?
-      ((values.altitude - values.groundElevationFeet) +
-       (geofs.aircraft.instance.collisionPoints[geofs.aircraft.instance.collisionPoints.length - 2].worldPosition[2]*3.2808399)) : 'N/A';
+    const enhancedAGL =
+      values.altitude !== undefined && values.groundElevationFeet !== undefined
+        ? values.altitude -
+          values.groundElevationFeet +
+          geofs.aircraft.instance.collisionPoints[
+            geofs.aircraft.instance.collisionPoints.length - 2
+          ].worldPosition[2] *
+            3.2808399
+        : 'N/A';
 
     // Enhanced landing detection
     if (enhancedAGL < 500) {
-      justLanded = (onGround && !isGrounded);
+      justLanded = onGround && !isGrounded;
       isGrounded = onGround;
     }
 
@@ -798,15 +996,15 @@ function getAircraftName() {
         departureICAO = nearestAirport.icao;
         departureAirportData = nearestAirport;
       } else {
-        departureICAO = promptForAirportICAO("Departure", lat, lon);
+        departureICAO = promptForAirportICAO('Departure', lat, lon);
         departureAirportData = null;
       }
       saveSession();
       console.log(`🛫 Departure detected at ${departureICAO}`);
       if (panelUI) {
         if (window.instruments && window.instruments.visible) {
-          panelUI.style.opacity = "0";
-          setTimeout(() => panelUI.style.display = "none", 500);
+          panelUI.style.opacity = '0';
+          setTimeout(() => (panelUI.style.display = 'none'), 500);
         }
       }
     }
@@ -819,16 +1017,23 @@ function getAircraftName() {
         bounces++;
       }
 
-      const vs = calVertS !== 0 ? calVertS : values.verticalSpeed;
+      const vs =
+        calculatedVerticalSpeed !== 0
+          ? calculatedVerticalSpeed
+          : values.verticalSpeed;
 
       if (vs <= -800) {
-        showToast("💥 CRASH DETECTED<br>Logging crash report...", 'crash', 4000);
+        showToast(
+          '💥 CRASH DETECTED<br>Logging crash report...',
+          'crash',
+          4000
+        );
         const nearestAirport = getNearestAirport(lat, lon);
         if (nearestAirport) {
-          arrivalICAO = "Crash";
+          arrivalICAO = 'Crash';
           arrivalAirportData = nearestAirport;
         } else {
-          arrivalICAO = "Crash";
+          arrivalICAO = 'Crash';
           arrivalAirportData = null;
         }
       } else {
@@ -837,7 +1042,7 @@ function getAircraftName() {
           arrivalICAO = nearestAirport.icao;
           arrivalAirportData = nearestAirport;
         } else {
-          arrivalICAO = promptForAirportICAO("Arrival", lat, lon);
+          arrivalICAO = promptForAirportICAO('Arrival', lat, lon);
           arrivalAirportData = null;
         }
       }
@@ -848,21 +1053,25 @@ function getAircraftName() {
 
       const g = (values.accZ / 9.80665).toFixed(2);
       const gs = values.groundSpeedKnt.toFixed(1);
-      const tas = geofs.aircraft.instance.trueAirSpeed?.toFixed(1) || "N/A";
-      const quality = (vs > -60) ? "BUTTER" : (vs > -800) ? "HARD" : "CRASH";
-      const baseCallsign = callsignInput.value.trim() || "Unknown";
+      const tas = geofs.aircraft.instance.trueAirSpeed?.toFixed(1) || 'N/A';
+      const quality = vs > -60 ? 'BUTTER' : vs > -800 ? 'HARD' : 'CRASH';
+      const baseCallsign = callsignInput.value.trim() || 'Unknown';
       const airlineICAO = getCurrentAirlineICAO();
-      const pilot = baseCallsign.toUpperCase().startsWith(airlineICAO) ?
-        baseCallsign : `${airlineICAO}${baseCallsign}`;
+      const pilot = baseCallsign.toUpperCase().startsWith(airlineICAO)
+        ? baseCallsign
+        : `${airlineICAO}${baseCallsign}`;
       const aircraft = getAircraftName();
-      const durationMin = Math.round((firstGroundTime - flightStartTime) / 60000);
+      const durationMin = Math.round(
+        (firstGroundTime - flightStartTime) / 60000
+      );
 
       const hours = Math.floor(durationMin / 60);
       const minutes = durationMin % 60;
       const formattedDuration = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
 
       sendLogToDiscord({
-        pilot, aircraft,
+        pilot,
+        aircraft,
         takeoff: flightStartTime,
         landing: firstGroundTime,
         dep: departureICAO,
@@ -873,7 +1082,7 @@ function getAircraftName() {
         gs: gs,
         ktrue: tas,
         landingQuality: quality,
-        teleportWarning: currentFlightTeleported
+        teleportWarning: currentFlightTeleported,
       });
 
       saveSession();
@@ -892,21 +1101,21 @@ function getAircraftName() {
     hasLanded = false;
     firstGroundContact = false;
     flightStartTime = null;
-    departureICAO = "UNKNOWN";
-    arrivalICAO = "UNKNOWN";
+    departureICAO = 'UNKNOWN';
+    arrivalICAO = 'UNKNOWN';
     departureAirportData = null;
     arrivalAirportData = null;
     bounces = 0;
     isGrounded = true;
     currentFlightTeleported = false;
-    callsignInput.value = "";
+    callsignInput.value = '';
     callsignInput.disabled = false;
     startButton.disabled = true;
-    startButton.innerText = "📋 Start Flight Logger";
+    startButton.innerText = '📋 Start Flight Logger';
     if (panelUI) {
       if (window.instruments && window.instruments.visible) {
-        panelUI.style.display = "block";
-        panelUI.style.opacity = "0.5";
+        panelUI.style.display = 'block';
+        panelUI.style.opacity = '0.5';
       }
     }
   }
@@ -931,7 +1140,7 @@ function getAircraftName() {
       zIndex: '10000',
       display: 'flex',
       justifyContent: 'center',
-      alignItems: 'center'
+      alignItems: 'center',
     });
 
     const dialog = document.createElement('div');
@@ -944,7 +1153,7 @@ function getAircraftName() {
       maxWidth: '600px',
       maxHeight: '80vh',
       overflow: 'auto',
-      fontFamily: 'sans-serif'
+      fontFamily: 'sans-serif',
     });
 
     dialog.innerHTML = `
@@ -1021,21 +1230,27 @@ function getAircraftName() {
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
 
-    document.getElementById('agreeBtn').addEventListener('click', function() {
+    document.getElementById('agreeBtn').addEventListener('click', function () {
       setTermsAgreed();
       document.body.removeChild(overlay);
-      console.log("✅ User agreed to SAW system terms of use");
+      console.log('✅ User agreed to SAW system terms of use');
       createSidePanel();
       setTimeout(updatePanelVisibility, 1000);
     });
 
-    document.getElementById('disagreeBtn').addEventListener('click', function() {
-      document.body.removeChild(overlay);
-      console.log("❌ User disagreed to SAW system terms of use - Flight Logger disabled");
-      alert("You chose to disagree with the terms of use. GeoFS SAW Flight Logger will not be activated.");
-    });
+    document
+      .getElementById('disagreeBtn')
+      .addEventListener('click', function () {
+        document.body.removeChild(overlay);
+        console.log(
+          '❌ User disagreed to SAW system terms of use - Flight Logger disabled'
+        );
+        alert(
+          'You chose to disagree with the terms of use. GeoFS SAW Flight Logger will not be activated.'
+        );
+      });
 
-    overlay.addEventListener('click', function(e) {
+    overlay.addEventListener('click', function (e) {
       if (e.target === overlay) {
         e.preventDefault();
       }
@@ -1043,69 +1258,72 @@ function getAircraftName() {
   }
 
   function disableKeyPropagation(input) {
-    ["keydown", "keyup", "keypress"].forEach(ev =>
+    ['keydown', 'keyup', 'keypress'].forEach(ev =>
       input.addEventListener(ev, e => e.stopPropagation())
     );
   }
 
- function createSidePanel() {
-    panelUI = document.createElement("div");
+  /**
+   * Creates the main UI panel for the flight logger
+   */
+  function createSidePanel() {
+    panelUI = document.createElement('div');
     Object.assign(panelUI.style, {
-      position: "absolute",
-      bottom: "50px",
-      left: "10px",
-      background: "#111",
-      color: "white",
-      padding: "10px",
-      border: "2px solid white",
-      zIndex: "21",
-      width: "220px",
-      fontSize: "14px",
-      fontFamily: "sans-serif",
-      transition: "opacity 0.5s ease",
-      display: "block",
-      opacity: "0.5"
+      position: 'absolute',
+      bottom: '50px',
+      left: '10px',
+      background: '#111',
+      color: 'white',
+      padding: '10px',
+      border: '2px solid white',
+      zIndex: '21',
+      width: '220px',
+      fontSize: '14px',
+      fontFamily: 'sans-serif',
+      transition: 'opacity 0.5s ease',
+      display: 'block',
+      opacity: '0.5',
     });
 
-    const airlineLabel = document.createElement("div");
-    airlineLabel.textContent = "Airline:";
-    airlineLabel.style.marginBottom = "3px";
-    airlineLabel.style.fontSize = "12px";
+    const airlineLabel = document.createElement('div');
+    airlineLabel.textContent = 'Airline:';
+    airlineLabel.style.marginBottom = '3px';
+    airlineLabel.style.fontSize = '12px';
     panelUI.appendChild(airlineLabel);
 
-    airlineSelect = document.createElement("select");
-    airlineSelect.style.width = "100%";
-    airlineSelect.style.marginBottom = "6px";
+    airlineSelect = document.createElement('select');
+    airlineSelect.style.width = '100%';
+    airlineSelect.style.marginBottom = '6px';
     panelUI.appendChild(airlineSelect);
 
-    const airlineButtons = document.createElement("div");
-    airlineButtons.style.display = "flex";
-    airlineButtons.style.gap = "4px";
-    airlineButtons.style.marginBottom = "6px";
+    const airlineButtons = document.createElement('div');
+    airlineButtons.style.display = 'flex';
+    airlineButtons.style.gap = '4px';
+    airlineButtons.style.marginBottom = '6px';
 
-    const addAirlineBtn = document.createElement("button");
-    addAirlineBtn.textContent = "+ Add";
+    const addAirlineBtn = document.createElement('button');
+    addAirlineBtn.textContent = '+ Add';
     Object.assign(addAirlineBtn.style, {
-      flex: "1",
-      padding: "3px",
-      background: "#006600",
-      color: "white",
-      border: "1px solid white",
-      cursor: "pointer",
-      fontSize: "10px"
+      flex: '1',
+      padding: '3px',
+      background: '#006600',
+      color: 'white',
+      border: '1px solid white',
+      cursor: 'pointer',
+      fontSize: '10px',
     });
     addAirlineBtn.onclick = addNewAirline;
 
-    const removeAirlineBtn = document.createElement("button");
-    removeAirlineBtn.textContent = "- Remove";
+    const removeAirlineBtn = document.createElement('button');
+    removeAirlineBtn.textContent = '- Remove';
     Object.assign(removeAirlineBtn.style, {
-      flex: "1",
-      padding: "3px",
-      background: "#660000",
-      color: "white",
-      border: "1px solid white",
-      cursor: "pointer",
-      fontSize: "10px"
+      flex: '1',
+      padding: '3px',
+      background: '#660000',
+      color: 'white',
+      border: '1px solid white',
+      cursor: 'pointer',
+      fontSize: '10px',
     });
     removeAirlineBtn.onclick = removeAirline;
 
@@ -1113,37 +1331,37 @@ function getAircraftName() {
     airlineButtons.appendChild(removeAirlineBtn);
     panelUI.appendChild(airlineButtons);
 
-    callsignInput = document.createElement("input");
-    callsignInput.placeholder = "Callsign";
-    callsignInput.style.width = "100%";
-    callsignInput.style.marginBottom = "6px";
+    callsignInput = document.createElement('input');
+    callsignInput.placeholder = 'Callsign';
+    callsignInput.style.width = '100%';
+    callsignInput.style.marginBottom = '6px';
     disableKeyPropagation(callsignInput);
     callsignInput.onkeyup = () => {
-      startButton.disabled = callsignInput.value.trim() === "";
+      startButton.disabled = callsignInput.value.trim() === '';
     };
 
-    startButton = document.createElement("button");
-    startButton.innerText = "📋 Start Flight Logger";
+    startButton = document.createElement('button');
+    startButton.innerText = '📋 Start Flight Logger';
     startButton.disabled = true;
     Object.assign(startButton.style, {
-      width: "100%",
-      padding: "6px",
-      background: "#333",
-      color: "white",
-      border: "1px solid white",
-      cursor: "pointer"
+      width: '100%',
+      padding: '6px',
+      background: '#333',
+      color: 'white',
+      border: '1px solid white',
+      cursor: 'pointer',
     });
 
     startButton.onclick = () => {
       if (!callsignInput.value.trim()) {
-        alert("Please enter a callsign before starting the flight logger!");
+        alert('Please enter a callsign before starting the flight logger!');
         return;
       }
 
-      alert("Flight Logger activated! Start your flight when ready.");
+      alert('Flight Logger activated! Start your flight when ready.');
       monitorInterval = setInterval(monitorFlight, 1000);
       setInterval(updateCalVertS, 25);
-      startButton.innerText = "✅ Logger Running...";
+      startButton.innerText = '✅ Logger Running...';
       startButton.disabled = true;
       callsignInput.disabled = true;
     };
@@ -1152,30 +1370,39 @@ function getAircraftName() {
     panelUI.appendChild(startButton);
 
     const resumeSession = loadSession();
-    const resumeBtn = document.createElement("button");
+    const resumeBtn = document.createElement('button');
 
     // Check if there's a valid session to resume
-    if (resumeSession && resumeSession.flightStarted && resumeSession.callsign) {
+    if (
+      resumeSession &&
+      resumeSession.flightStarted &&
+      resumeSession.callsign
+    ) {
       const sessionAge = (Date.now() - resumeSession.timestamp) / (1000 * 60);
       const sessionInfo = `${resumeSession.callsign} (${resumeSession.departureICAO})`;
-      resumeBtn.innerText = sessionAge < 60 ?
-        `⏪ Resume: ${sessionInfo}` :
-        `⏪ Resume: ${sessionInfo} (${Math.floor(sessionAge/60)}h ago)`;
+      resumeBtn.innerText =
+        sessionAge < 60
+          ? `⏪ Resume: ${sessionInfo}`
+          : `⏪ Resume: ${sessionInfo} (${Math.floor(sessionAge / 60)}h ago)`;
     } else {
-      resumeBtn.innerText = "⏪ Resume Last Flight";
+      resumeBtn.innerText = '⏪ Resume Last Flight';
       resumeBtn.disabled = true;
-      resumeBtn.style.opacity = "0.5";
+      resumeBtn.style.opacity = '0.5';
     }
 
     Object.assign(resumeBtn.style, {
-      width: "100%",
-      marginTop: "6px",
-      padding: "6px",
-      background: resumeSession && resumeSession.flightStarted ? "#2a4a2a" : "#222",
-      color: "white",
-      border: "1px solid white",
-      cursor: resumeSession && resumeSession.flightStarted ? "pointer" : "not-allowed",
-      fontSize: "11px"
+      width: '100%',
+      marginTop: '6px',
+      padding: '6px',
+      background:
+        resumeSession && resumeSession.flightStarted ? '#2a4a2a' : '#222',
+      color: 'white',
+      border: '1px solid white',
+      cursor:
+        resumeSession && resumeSession.flightStarted
+          ? 'pointer'
+          : 'not-allowed',
+      fontSize: '11px',
     });
 
     resumeBtn.onclick = () => {
@@ -1190,15 +1417,18 @@ function getAircraftName() {
         departureICAO = resumeSession.departureICAO;
         departureAirportData = resumeSession.departureAirportData;
         firstGroundContact = resumeSession.firstGroundContact || false;
-        currentFlightTeleported = resumeSession.currentFlightTeleported || false;
+        currentFlightTeleported =
+          resumeSession.currentFlightTeleported || false;
 
         // Restore form data
-        callsignInput.value = resumeSession.callsign || "";
+        callsignInput.value = resumeSession.callsign || '';
 
         // Restore airline selection
         if (resumeSession.selectedAirline && airlineSelect) {
           const targetOption = Array.from(airlineSelect.options).find(
-            option => option.getAttribute('data-airline-name') === resumeSession.selectedAirline
+            option =>
+              option.getAttribute('data-airline-name') ===
+              resumeSession.selectedAirline
           );
           if (targetOption) {
             airlineSelect.value = targetOption.value;
@@ -1210,35 +1440,43 @@ function getAircraftName() {
         setInterval(updateCalVertS, 25);
 
         // Update UI
-        resumeBtn.innerText = "✅ Resumed!";
+        resumeBtn.innerText = '✅ Resumed!';
         resumeBtn.disabled = true;
-        startButton.innerText = "✅ Logger Running...";
+        startButton.innerText = '✅ Logger Running...';
         startButton.disabled = true;
         callsignInput.disabled = true;
 
-        const flightDuration = Math.floor((Date.now() - flightStartTime) / 60000);
-        console.log(`🔁 Flight resumed: ${resumeSession.callsign} from ${departureICAO}`);
-        showToast(`🔄 Flight resumed: ${resumeSession.callsign}<br>📍 From: ${departureICAO}<br>🔍 Analyzing movement patterns for 20s...`, 'success', 6000);
+        const flightDuration = Math.floor(
+          (Date.now() - flightStartTime) / 60000
+        );
+        console.log(
+          `🔁 Flight resumed: ${resumeSession.callsign} from ${departureICAO}`
+        );
+        showToast(
+          `🔄 Flight resumed: ${resumeSession.callsign}<br>📍 From: ${departureICAO}<br>🔍 Analyzing movement patterns for 20s...`,
+          'success',
+          6000
+        );
 
         if (panelUI && window.instruments && window.instruments.visible) {
-          panelUI.style.opacity = "0";
-          setTimeout(() => panelUI.style.display = "none", 500);
+          panelUI.style.opacity = '0';
+          setTimeout(() => (panelUI.style.display = 'none'), 500);
         }
       } else {
-        alert("❌ No valid flight session found to resume.");
+        alert('❌ No valid flight session found to resume.');
       }
     };
 
     panelUI.appendChild(resumeBtn);
 
     // Add warning status display (WITHOUT reset button)
-    const warningStatus = document.createElement("div");
+    const warningStatus = document.createElement('div');
     const currentWarnings = getTeleportWarnings();
     warningStatus.className = 'warning-status';
     warningStatus.innerHTML = `<small style="color: ${currentWarnings > 0 ? '#ffaa00' : '#00ff00'};">Teleport warnings: ${currentWarnings}/2</small>`;
-    warningStatus.style.marginTop = "4px";
-    warningStatus.style.fontSize = "10px";
-    warningStatus.style.textAlign = "center";
+    warningStatus.style.marginTop = '4px';
+    warningStatus.style.fontSize = '10px';
+    warningStatus.style.textAlign = 'center';
     panelUI.appendChild(warningStatus);
 
     document.body.appendChild(panelUI);
@@ -1247,21 +1485,24 @@ function getAircraftName() {
 
   function updatePanelVisibility() {
     if (panelUI) {
-      panelUI.style.display = (window.instruments && window.instruments.visible) ? "block" : "none";
+      panelUI.style.display =
+        window.instruments && window.instruments.visible ? 'block' : 'none';
     }
     setTimeout(updatePanelVisibility, 100);
   }
 
-window.addEventListener("load", () => {
-    console.log("✅ GeoFS SAW Flight Logger loaded");
+  window.addEventListener('load', () => {
+    console.log('✅ GeoFS SAW Flight Logger loaded');
 
     if (localStorage.getItem(TERMS_AGREED_KEY) === 'true') {
-      console.log("✅ SAW system terms already agreed, initializing Flight Logger");
+      console.log(
+        '✅ SAW system terms already agreed, initializing Flight Logger'
+      );
       createSidePanel();
       setTimeout(updatePanelVisibility, 1000);
     } else {
-      console.log("📋 First time user, showing SAW system terms of use");
+      console.log('📋 First time user, showing SAW system terms of use');
       setTimeout(showTermsDialog, 2000);
     }
   });
-})()
+})();
