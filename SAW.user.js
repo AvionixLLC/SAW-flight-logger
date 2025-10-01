@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Semi-Automated-Webhook Flight Logger (GeoFS)
 // @namespace    https://your-va.org/flightlogger
-// @version      2025-10-01
+// @version      2025-10-02
 // @description  Logs flights with crash detection, auto ICAO detection, session recovery, improved landing stats & advanced teleportation detection
 // @match        http://*/geofs.php*
 // @match        https://*/geofs.php*
@@ -44,29 +44,23 @@
   let isGrounded = true;
   let justLanded = false;
 
-  // ====== Advanced Teleportation Detection System ======
-  const MAX_RESPAWN_DISTANCE = 300;
-  const MIN_MOVEMENT_THRESHOLD = 5;
-  const ANALYSIS_SAMPLES = 10; // More samples for better analysis
-  const MAX_SPEED_MPS = 300;
-  const MAX_HEADING_VARIANCE = 50; // Allow gradual heading changes
-  const SPEED_DROP_THRESHOLD = 0.35; // 35% sudden speed drop indicates teleport
-  const RESUME_ANALYSIS_TIME = 20000; // 20 seconds to analyze post-resume movement
+  // ====== Simplified Teleportation Detection System ======
+  const TELEPORT_DISTANCE_THRESHOLD = 2000; // Distance in meters (2km) to trigger a check
+  const TELEPORT_VERIFICATION_TIME = 10000; // Time in ms (10 seconds) to wait and verify
+
+  let gameLoadTime = Date.now();
+  let isGameLoading = true;
+  let currentFlightTeleported = false;
+
+  // State for the new verification logic
+  let isVerifyingTeleport = false;
+  let teleportCheckStartTime = null;
+  let preTeleportPosition = null;
 
   let lastPosition = (() => {
     const stored = localStorage.getItem(LAST_POSITION_KEY);
     return stored ? JSON.parse(stored) : null;
   })();
-
-  let positionHistory = [];
-  let speedHistory = [];
-  let headingHistory = [];
-  let gameLoadTime = Date.now();
-  let isGameLoading = true;
-  let currentFlightTeleported = false;
-  let flightResumeTime = null;
-  let isAnalyzingResume = false;
-  let lastTeleportCheck = Date.now();
 
   /**
    * Saves the aircraft's current position to localStorage for teleportation detection
@@ -112,217 +106,72 @@
     return R * c;
   }
 
-  function calculateHeading(lat1, lon1, lat2, lon2) {
-    const dLat = lat2 - lat1;
-    const dLon = lon2 - lon1;
-    let heading = Math.atan2(dLon, dLat) * (180 / Math.PI);
-    if (heading < 0) heading += 360;
-    return heading;
-  }
-
-  function detectSuddenSpeedDrop() {
-    if (speedHistory.length < 4) return false;
-
-    const recent = speedHistory.slice(-4);
-
-    // Check for sudden drops without gradual deceleration
-    for (let i = 1; i < recent.length; i++) {
-      const prevSpeed = recent[i - 1];
-      const currSpeed = recent[i];
-
-      // Skip if speeds are too low to be meaningful
-      if (prevSpeed < 20 || currSpeed < 5) continue;
-
-      const speedDrop = (prevSpeed - currSpeed) / prevSpeed;
-
-      // Sudden drop of more than 35% in one step is suspicious
-      if (speedDrop > SPEED_DROP_THRESHOLD) {
-        console.log(
-          `🚨 Sudden speed drop detected: ${prevSpeed.toFixed(1)} -> ${currSpeed.toFixed(1)} m/s (${(speedDrop * 100).toFixed(1)}% drop)`
-        );
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  /**
-   * Analyzes movement patterns to detect potential teleportation
-   * @returns {boolean} True if movement patterns are consistent (no teleportation detected)
-   */
-  function analyzeMovementConsistency() {
-    if (positionHistory.length < 5 || speedHistory.length < 5) {
-      console.log('❓ Insufficient data for movement analysis');
-      return false;
-    }
-
-    // Analyze heading consistency (allow gradual changes)
-    const headings = [];
-    for (let i = 1; i < positionHistory.length; i++) {
-      const prev = positionHistory[i - 1];
-      const curr = positionHistory[i];
-      const heading = calculateHeading(prev.lat, prev.lon, curr.lat, curr.lon);
-      headings.push(heading);
-    }
-
-    // Check for consistent direction (gradual changes allowed)
-    let maxHeadingChange = 0;
-    for (let i = 1; i < headings.length; i++) {
-      let headingChange = Math.abs(headings[i] - headings[i - 1]);
-      if (headingChange > 180) headingChange = 360 - headingChange;
-      maxHeadingChange = Math.max(maxHeadingChange, headingChange);
-    }
-
-    const headingConsistent = maxHeadingChange < MAX_HEADING_VARIANCE;
-
-    // Analyze speed patterns
-    const avgSpeed =
-      speedHistory.reduce((a, b) => a + b, 0) / speedHistory.length;
-    const maxSpeed = Math.max(...speedHistory);
-    const minSpeed = Math.min(...speedHistory.filter(s => s > 1)); // Ignore very low speeds
-
-    const speedReasonable = maxSpeed < MAX_SPEED_MPS && avgSpeed > 2;
-    const speedConsistent =
-      minSpeed > 0 && maxSpeed / Math.max(minSpeed, 1) < 6;
-
-    // Check for teleportation speed signature
-    const hasSuddenSpeedDrop = detectSuddenSpeedDrop();
-
-    const isConsistent =
-      headingConsistent &&
-      speedReasonable &&
-      speedConsistent &&
-      !hasSuddenSpeedDrop;
-
-    console.log(
-      `📊 Movement Analysis: Heading OK=${headingConsistent} (max change: ${maxHeadingChange.toFixed(1)}°), Speed OK=${speedReasonable}, Speed Consistent=${speedConsistent}, No Speed Drop=${!hasSuddenSpeedDrop}, Avg Speed=${avgSpeed.toFixed(1)}m/s`
-    );
-
-    return isConsistent;
-  }
-
   function checkTeleportation(currentLat, currentLon, currentAlt) {
     const now = Date.now();
-    const currentSpeed =
-      (geofs?.animation?.values?.groundSpeedKnt || 0) * 0.514444; // Convert to m/s
 
-    // Skip during initial game load
-    if (isGameLoading && now - gameLoadTime < 10000) {
-      return false;
-    } else if (isGameLoading) {
-      isGameLoading = false;
-      console.log('🎮 Game loading complete - teleportation detection active');
-    }
-
-    // Post-resume analysis period - ONLY check for consistent movement after resume
-    if (isAnalyzingResume && flightResumeTime) {
-      const timeSinceResume = now - flightResumeTime;
-
-      if (timeSinceResume < RESUME_ANALYSIS_TIME) {
-        // Collect movement data during analysis period
-        if (lastPosition) {
-          const distance = getDistance(
-            lastPosition.lat,
-            lastPosition.lon,
-            currentLat,
-            currentLon
-          );
-          if (distance > MIN_MOVEMENT_THRESHOLD) {
-            positionHistory.push({
-              lat: currentLat,
-              lon: currentLon,
-              alt: currentAlt,
-              timestamp: now,
-            });
-            speedHistory.push(currentSpeed);
-            saveLastPosition(currentLat, currentLon, currentAlt);
-          }
-        } else {
-          saveLastPosition(currentLat, currentLon, currentAlt);
-          positionHistory = [
-            {
-              lat: currentLat,
-              lon: currentLon,
-              alt: currentAlt,
-              timestamp: now,
-            },
-          ];
-          speedHistory = [currentSpeed];
-        }
-        return false; // Don't check for teleportation during analysis
+    // If we are currently in the 10-second verification window
+    if (isVerifyingTeleport) {
+      if (now - teleportCheckStartTime < TELEPORT_VERIFICATION_TIME) {
+        // Not enough time has passed, do nothing and don't update lastPosition
+        return false;
       } else {
-        // Analysis period over - evaluate movement
-        isAnalyzingResume = false;
-        const movementConsistent = analyzeMovementConsistency();
-
-        console.log(
-          `🔍 Post-resume analysis complete: Movement consistent = ${movementConsistent}`
+        // 10 seconds are up, let's check the final position
+        isVerifyingTeleport = false;
+        const finalDistance = getDistance(
+          preTeleportPosition.lat,
+          preTeleportPosition.lon,
+          currentLat,
+          currentLon
         );
 
-        if (!movementConsistent) {
-          // Movement was inconsistent - trigger teleportation detection
-          const currentWarnings = getTeleportWarnings();
+        if (finalDistance > TELEPORT_DISTANCE_THRESHOLD) {
+          // It was a real teleport, far away from the start point
+          console.log(`🚨 Teleportation confirmed! Final distance: ${finalDistance.toFixed(1)}m`);
 
-          if (currentWarnings === 0) {
+          const currentWarnings = getTeleportWarnings();
+          if (currentWarnings < 1) {
             incrementTeleportWarnings();
             currentFlightTeleported = true;
-
             showToast(
-              '⚠️ TELEPORTATION DETECTED!<br>🔍 Inconsistent movement after flight resume<br>📝 First warning - Flight continues',
+              '⚠️ TELEPORTATION DETECTED!<br>📝 First warning - This will be noted in your report.',
               'warning',
               7000
             );
-            console.log(
-              `⚠️ First teleportation warning - inconsistent post-resume movement`
-            );
-
-            return false;
+            // Update position to the new teleported location to start tracking from there
+            saveLastPosition(currentLat, currentLon, currentAlt);
+            return false; // Not terminating yet
           } else {
             showToast(
               '🚨 TELEPORTATION DETECTED!<br>❌ Multiple violations - Flight terminated',
               'warning',
               5000
             );
-            console.log(
-              `🚨 Second teleportation violation - terminating flight`
-            );
-
             if (flightStarted) {
               endFlight('TELEPORTATION');
             }
-            return true;
+            return true; // Terminating
           }
         } else {
-          console.log(
-            '✅ Post-resume movement analysis passed - legitimate flight'
-          );
+          // The user respawned nearby, it's fine
+          console.log(`✅ Location re-verified. Distance: ${finalDistance.toFixed(1)}m. Flight continues.`);
+          showToast('✅ Location verified<br>Flight continuing normally.', 'success', 4000);
+          saveLastPosition(currentLat, currentLon, currentAlt); // Update position to the new verified one
+          return false; // Not a teleport
         }
       }
     }
 
-    // Regular teleportation checks (only when NOT analyzing resume)
-    if (now - lastTeleportCheck < 1000) return false;
-    lastTeleportCheck = now;
+    // Skip during initial game load
+    if (isGameLoading && now - gameLoadTime < 10000) {
+      saveLastPosition(currentLat, currentLon, currentAlt);
+      return false;
+    } else if (isGameLoading) {
+      isGameLoading = false;
+      console.log('🎮 Game loading complete - teleportation detection active');
+    }
 
     if (!lastPosition) {
       saveLastPosition(currentLat, currentLon, currentAlt);
-      positionHistory = [
-        { lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now },
-      ];
-      speedHistory = [currentSpeed];
-      return false;
-    }
-
-    if (now - lastPosition.timestamp > 30000) {
-      console.log('🔄 Position data expired - resetting detection');
-      saveLastPosition(currentLat, currentLon, currentAlt);
-      positionHistory = [
-        { lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now },
-      ];
-      speedHistory = [currentSpeed];
-      gameLoadTime = now;
-      isGameLoading = true;
       return false;
     }
 
@@ -332,90 +181,27 @@
       currentLat,
       currentLon
     );
-    const altDiff = Math.abs(currentAlt - lastPosition.alt);
-    const timeDiff = (now - lastPosition.timestamp) / 1000;
-    const calculatedSpeed = distance / Math.max(timeDiff, 0.1);
 
-    // Update position history
-    if (distance > MIN_MOVEMENT_THRESHOLD) {
-      positionHistory.push({
-        lat: currentLat,
-        lon: currentLon,
-        alt: currentAlt,
-        timestamp: now,
-      });
-      speedHistory.push(currentSpeed);
-      saveLastPosition(currentLat, currentLon, currentAlt);
+    // If a large jump is detected, start the verification process
+    if (distance > TELEPORT_DISTANCE_THRESHOLD) {
+      console.log(`🔄 Large position change detected (${distance.toFixed(1)}m). Starting verification...`);
+      isVerifyingTeleport = true;
+      teleportCheckStartTime = now;
+      preTeleportPosition = { lat: lastPosition.lat, lon: lastPosition.lon }; // Store the position *before* the jump
 
-      // Keep history manageable
-      if (positionHistory.length > ANALYSIS_SAMPLES * 2) {
-        positionHistory = positionHistory.slice(-ANALYSIS_SAMPLES);
-        speedHistory = speedHistory.slice(-ANALYSIS_SAMPLES);
-      }
-    }
-
-    // Check for obvious teleportation (large distance/speed jumps during regular flight)
-    const isSuspicious =
-      distance > MAX_RESPAWN_DISTANCE ||
-      altDiff > MAX_RESPAWN_DISTANCE ||
-      calculatedSpeed > MAX_SPEED_MPS;
-
-    if (isSuspicious) {
-      // Verify if this is legitimate high-speed movement
-      const movementConsistent = analyzeMovementConsistency();
-
-      if (movementConsistent && calculatedSpeed < MAX_SPEED_MPS * 1.5) {
-        console.log(
-          `✈️ High-speed but consistent flight: ${calculatedSpeed.toFixed(1)}m/s`
-        );
-        return false;
-      }
-
-      console.log(
-        `🚨 Teleportation detected during active flight: ${distance.toFixed(1)}m, ${calculatedSpeed.toFixed(1)}m/s`
+      showToast(
+        '🔄 Position Change Detected<br>Verifying new location in 10 seconds...',
+        'info',
+        TELEPORT_VERIFICATION_TIME
       );
 
-      const currentWarnings = getTeleportWarnings();
-
-      if (currentWarnings === 0) {
-        incrementTeleportWarnings();
-        currentFlightTeleported = true;
-
-        showToast(
-          '⚠️ TELEPORTATION DETECTED!<br>🔄 First warning - Flight continues<br>📝 This will be noted in your report',
-          'warning',
-          6000
-        );
-        console.log(`⚠️ First teleportation warning during active flight`);
-
-        // Reset tracking
-        positionHistory = [
-          { lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now },
-        ];
-        speedHistory = [currentSpeed];
-        return false;
-      } else {
-        showToast(
-          '🚨 TELEPORTATION DETECTED!<br>❌ Multiple violations - Flight terminated',
-          'warning',
-          5000
-        );
-        console.log(
-          `🚨 Multiple teleportation violations - terminating flight`
-        );
-
-        if (flightStarted) {
-          endFlight('TELEPORTATION');
-        }
-
-        positionHistory = [
-          { lat: currentLat, lon: currentLon, alt: currentAlt, timestamp: now },
-        ];
-        speedHistory = [currentSpeed];
-        return true;
-      }
+      // We return false here to prevent any other action while we are waiting for verification.
+      // The `lastPosition` will not be updated because we return before the final save.
+      return false;
     }
 
+    // If no large jump, just update the position and continue
+    saveLastPosition(currentLat, currentLon, currentAlt);
     return false;
   }
 
@@ -1506,8 +1292,6 @@
 
     resumeBtn.onclick = () => {
       if (resumeSession && resumeSession.flightStarted) {
-        isAnalyzingResume = true;
-        flightResumeTime = Date.now();
         flightStarted = true;
         flightStartTime = resumeSession.flightStartTime;
         departureICAO = resumeSession.departureICAO;
@@ -1542,7 +1326,7 @@
           `🔁 Flight resumed: ${resumeSession.callsign} from ${departureICAO}`
         );
         showToast(
-          `🔄 Flight resumed: ${resumeSession.callsign}<br>📍 From: ${departureICAO}<br>🔍 Analyzing movement...`,
+          `🔄 Flight resumed: ${resumeSession.callsign}<br>📍 From: ${departureICAO}<br>Position will be verified.`,
           'success',
           6000
         );
@@ -1598,3 +1382,4 @@
     }
   });
 })();
+
