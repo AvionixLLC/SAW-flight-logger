@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Semi-Automated-Webhook Flight Logger (GeoFS)
 // @namespace    https://your-va.org/flightlogger
-// @version      2025-10-02
+// @version      2025-10-03
 // @description  Logs flights with crash detection, auto ICAO detection, session recovery, improved landing stats & advanced teleportation detection
 // @match        http://*/geofs.php*
 // @match        https://*/geofs.php*
@@ -20,6 +20,7 @@
   const TERMS_AGREED_KEY = 'geofs_flight_logger_terms_agreed';
   const LAST_POSITION_KEY = 'geofs_flight_logger_last_position';
   const TELEPORT_WARNINGS_KEY = 'geofs_flight_logger_teleport_warnings';
+  const AUTOHIDE_KEY = 'geofs_flight_logger_autohide';
 
   let flightStarted = false;
   let flightStartTime = null;
@@ -27,6 +28,7 @@
   let arrivalICAO = 'UNKNOWN';
   let hasLanded = false;
   let monitorInterval = null;
+  let sessionSaveInterval = null; // For periodic saving
   let firstGroundContact = false;
   let firstGroundTime = null;
   let panelUI, startButton, callsignInput, aircraftInput, airlineSelect;
@@ -289,6 +291,10 @@
       clearInterval(monitorInterval);
       monitorInterval = null;
     }
+    if (sessionSaveInterval) {
+        clearInterval(sessionSaveInterval);
+        sessionSaveInterval = null;
+    }
   }
 
   // ====== Load airports database ======
@@ -332,6 +338,7 @@
   }
 
   function saveSession() {
+    if (!flightStarted) return;
     const session = {
       flightStarted,
       flightStartTime,
@@ -348,6 +355,7 @@
       timestamp: Date.now(),
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+    // console.log('Flight session saved.'); // Optional: for debugging
   }
 
   function loadSession() {
@@ -761,7 +769,7 @@
     const enhancedAGL =
       values.altitude !== undefined && values.groundElevationFeet !== undefined
         ? values.altitude -
-          values.groundElevationFeet +
+          geofs.animation.values.groundElevationFeet +
           geofs.aircraft.instance.collisionPoints[
             geofs.aircraft.instance.collisionPoints.length - 2
           ].worldPosition[2] *
@@ -785,12 +793,14 @@
         departureICAO = promptForAirportICAO('Departure', lat, lon);
         departureAirportData = null;
       }
-      saveSession();
+      saveSession(); // Initial save
+      if (!sessionSaveInterval) {
+          sessionSaveInterval = setInterval(saveSession, 15000); // Start periodic saving
+      }
       console.log(`🛫 Departure detected at ${departureICAO}`);
       if (panelUI) {
-        if (window.instruments && window.instruments.visible) {
-          panelUI.style.opacity = '0';
-          setTimeout(() => (panelUI.style.display = 'none'), 500);
+        if (localStorage.getItem(AUTOHIDE_KEY) === 'true') {
+             panelUI.classList.add('hidden-during-flight');
         }
       }
     }
@@ -871,13 +881,16 @@
         teleportWarning: currentFlightTeleported,
       });
 
-      saveSession();
       clearSession();
       resetPanel();
 
       if (monitorInterval) {
         clearInterval(monitorInterval);
         monitorInterval = null;
+      }
+      if (sessionSaveInterval) {
+        clearInterval(sessionSaveInterval);
+        sessionSaveInterval = null;
       }
     }
   }
@@ -894,16 +907,12 @@
     bounces = 0;
     isGrounded = true;
     currentFlightTeleported = false;
-    callsignInput.value = '';
-    callsignInput.disabled = false;
-    startButton.disabled = true;
-    startButton.innerText = '📋 Activate Logger';
-    if (panelUI) {
-      if (window.instruments && window.instruments.visible) {
-        panelUI.style.display = 'block';
-        panelUI.style.opacity = '0.7';
-      }
+
+    // Re-create the panel in its initial state
+    if (document.getElementById('saw-logger-panel')) {
+        document.getElementById('saw-logger-panel').remove();
     }
+    createSidePanel(false); // Create fresh panel in non-flight mode
   }
 
   function hasAgreedToTerms() {
@@ -1020,8 +1029,7 @@
       setTermsAgreed();
       document.body.removeChild(overlay);
       console.log('✅ User agreed to SAW system terms of use');
-      createSidePanel();
-      setTimeout(updatePanelVisibility, 1000);
+      initializeLogger();
     });
 
     document
@@ -1051,57 +1059,68 @@
 
   /**
    * Creates the main UI panel for the flight logger with an enhanced, modern UI.
+   * @param {boolean} isFlightActive - Determines if the panel should be in "active" or "start" mode.
+   * @param {object} sessionData - The session data if a flight is active.
    */
-  function createSidePanel() {
+  function createSidePanel(isFlightActive = false, sessionData = null) {
+     if (document.getElementById('saw-logger-panel')) return; // Avoid creating duplicate panels
+
     // --- Start of new UI styles ---
     const styles = `
+      @keyframes slideIn {
+        from { transform: translateX(-100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
       #saw-logger-panel {
         position: absolute;
         bottom: 50px;
         left: 10px;
-        background: rgba(25, 28, 32, 0.85);
+        background: rgba(25, 28, 32, 0.7);
         color: #e0e0e0;
-        backdrop-filter: blur(10px) saturate(1.5);
-        -webkit-backdrop-filter: blur(10px) saturate(1.5);
+        backdrop-filter: blur(20px) saturate(1.8);
+        -webkit-backdrop-filter: blur(20px) saturate(1.8);
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 12px;
         z-index: 21;
-        width: 250px;
+        width: 260px;
         font-family: 'Segoe UI', Roboto, sans-serif;
-        transition: opacity 0.4s ease;
+        transition: opacity 0.4s ease, transform 0.4s ease;
         display: block;
-        opacity: 0.7;
-        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
         overflow: hidden;
+        animation: slideIn 0.6s ease-out;
       }
-      #saw-logger-panel:hover {
-        opacity: 1;
+      #saw-logger-panel.hidden-during-flight {
+        opacity: 0 !important;
+        transform: translateX(-100%);
+        pointer-events: none;
       }
       .saw-header {
         background: rgba(0, 0, 0, 0.3);
-        padding: 8px 12px;
+        padding: 10px 15px;
         font-size: 16px;
-        font-weight: bold;
+        font-weight: 600;
         color: #00C8FF;
         text-align: center;
         border-bottom: 1px solid rgba(255, 255, 255, 0.1);
       }
       .saw-content {
-        padding: 12px;
+        padding: 15px;
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: 15px;
       }
       .saw-section {
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 8px;
       }
       .saw-label {
         font-size: 12px;
         font-weight: 500;
         color: #aaa;
         text-transform: uppercase;
+        letter-spacing: 0.5px;
       }
       .saw-input, .saw-select {
         width: 100%;
@@ -1109,44 +1128,43 @@
         border: 1px solid rgba(255, 255, 255, 0.2);
         color: #fff;
         border-radius: 6px;
-        padding: 8px;
+        padding: 10px;
         box-sizing: border-box;
+        font-size: 14px;
+        transition: all 0.2s ease;
       }
       .saw-input:focus, .saw-select:focus {
         outline: none;
         border-color: #00C8FF;
+        background: rgba(0, 0, 0, 0.6);
       }
       .saw-button-group {
         display: flex;
-        gap: 6px;
+        gap: 8px;
       }
       .saw-button {
         flex: 1;
-        padding: 6px;
+        padding: 8px;
         background: rgba(255, 255, 255, 0.1);
         color: #e0e0e0;
         border: 1px solid rgba(255, 255, 255, 0.2);
         border-radius: 6px;
         cursor: pointer;
         font-size: 12px;
-        transition: background-color 0.2s, border-color 0.2s;
+        transition: all 0.2s ease;
       }
       .saw-button:hover {
         background: rgba(255, 255, 255, 0.2);
         border-color: rgba(255, 255, 255, 0.3);
       }
-      .saw-button.add {
-        color: #81f0a3;
-      }
-      .saw-button.remove {
-        color: #f08181;
-      }
+      .saw-button.add { color: #81f0a3; }
+      .saw-button.remove { color: #f08181; }
       .saw-button-primary {
         background: #007BFF;
         color: white;
         font-weight: bold;
         border: none;
-        padding: 10px;
+        padding: 12px;
         font-size: 14px;
       }
       .saw-button-primary:disabled {
@@ -1157,21 +1175,43 @@
       .saw-button-primary:not(:disabled):hover {
         background: #0099FF;
       }
-      .saw-button-resume {
-        background: #1c5c34;
-        font-size: 12px;
+       .saw-checkbox-container {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px;
+        background: rgba(0,0,0,0.2);
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
       }
-      .saw-button-resume:disabled {
-        background: #333;
-        opacity: 0.6;
+      .saw-checkbox {
+        appearance: none;
+        width: 20px;
+        height: 20px;
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        border-radius: 4px;
+        position: relative;
+        cursor: pointer;
+        transition: all 0.2s ease;
       }
-      .saw-button-resume:not(:disabled):hover {
-        background: #2a7a4a;
+      .saw-checkbox:checked {
+        background-color: #007BFF;
+        border-color: #007BFF;
+      }
+      .saw-checkbox:checked::after {
+        content: '✔';
+        color: white;
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 14px;
       }
       .saw-footer {
         background: rgba(0, 0, 0, 0.2);
-        padding: 6px 12px;
-        font-size: 11px;
+        padding: 8px 15px;
+        font-size: 12px;
         text-align: center;
         border-top: 1px solid rgba(255, 255, 255, 0.1);
       }
@@ -1180,9 +1220,12 @@
     `;
 
     // Inject styles into the document head
-    const styleSheet = document.createElement('style');
-    styleSheet.innerText = styles;
-    document.head.appendChild(styleSheet);
+    if (!document.getElementById('saw-logger-styles')) {
+        const styleSheet = document.createElement('style');
+        styleSheet.id = 'saw-logger-styles';
+        styleSheet.innerText = styles;
+        document.head.appendChild(styleSheet);
+    }
     // --- End of new UI styles ---
 
     panelUI = document.createElement('div');
@@ -1247,8 +1290,6 @@
     flightSection.appendChild(callsignInput);
 
     startButton = document.createElement('button');
-    startButton.innerText = '📋 Activate Logger';
-    startButton.disabled = true;
     startButton.className = 'saw-button saw-button-primary';
     startButton.onclick = () => {
       if (!callsignInput.value.trim()) {
@@ -1259,123 +1300,118 @@
       alert('Flight Logger activated! Takeoff when ready.');
       monitorInterval = setInterval(monitorFlight, 1000);
       setInterval(updateCalVertS, 25);
-      startButton.innerText = '✅ Logger Running';
-      startButton.disabled = true;
-      callsignInput.disabled = true;
+      sessionSaveInterval = setInterval(saveSession, 15000); // Start periodic saving
+
+      if (document.getElementById('saw-logger-panel')) {
+        document.getElementById('saw-logger-panel').remove();
+      }
+      createSidePanel(true, { callsign: callsignInput.value, selectedAirline: airlineSelect.options[airlineSelect.selectedIndex]?.getAttribute('data-airline-name') });
     };
     flightSection.appendChild(startButton);
     content.appendChild(flightSection);
 
-    // --- Session Section ---
-    const sessionSection = document.createElement('div');
-    sessionSection.className = 'saw-section';
-
-    const resumeSession = loadSession();
-    const resumeBtn = document.createElement('button');
-    resumeBtn.className = 'saw-button saw-button-resume';
-
-    if (
-      resumeSession &&
-      resumeSession.flightStarted &&
-      resumeSession.callsign
-    ) {
-      const sessionAge = (Date.now() - resumeSession.timestamp) / (1000 * 60);
-      const sessionInfo = `${resumeSession.callsign} (${resumeSession.departureICAO})`;
-      resumeBtn.innerText =
-        sessionAge < 60
-          ? `⏪ Resume: ${sessionInfo}`
-          : `⏪ Resume: ${sessionInfo} (${Math.floor(sessionAge / 60)}h ago)`;
-    } else {
-      resumeBtn.innerText = '⏪ No Flight to Resume';
-      resumeBtn.disabled = true;
-    }
-
-    resumeBtn.onclick = () => {
-      if (resumeSession && resumeSession.flightStarted) {
-        flightStarted = true;
-        flightStartTime = resumeSession.flightStartTime;
-        departureICAO = resumeSession.departureICAO;
-        departureAirportData = resumeSession.departureAirportData;
-        firstGroundContact = resumeSession.firstGroundContact || false;
-        currentFlightTeleported =
-          resumeSession.currentFlightTeleported || false;
-
-        callsignInput.value = resumeSession.callsign || '';
-
-        if (resumeSession.selectedAirline && airlineSelect) {
-          const targetOption = Array.from(airlineSelect.options).find(
-            option =>
-              option.getAttribute('data-airline-name') ===
-              resumeSession.selectedAirline
-          );
-          if (targetOption) {
-            airlineSelect.value = targetOption.value;
-          }
+    // --- Settings Section ---
+    const settingsSection = document.createElement('div');
+    settingsSection.className = 'saw-section';
+    const autoHideLabel = document.createElement('label');
+    autoHideLabel.className = 'saw-checkbox-container';
+    const autoHideCheckbox = document.createElement('input');
+    autoHideCheckbox.type = 'checkbox';
+    autoHideCheckbox.className = 'saw-checkbox';
+    autoHideCheckbox.checked = localStorage.getItem(AUTOHIDE_KEY) === 'true';
+    const autoHideText = document.createElement('span');
+    autoHideText.textContent = 'Auto-hide panel during flight';
+    autoHideLabel.appendChild(autoHideCheckbox);
+    autoHideLabel.appendChild(autoHideText);
+    autoHideLabel.onclick = () => {
+        autoHideCheckbox.checked = !autoHideCheckbox.checked;
+        localStorage.setItem(AUTOHIDE_KEY, autoHideCheckbox.checked);
+        if (flightStarted) {
+            panelUI.classList.toggle('hidden-during-flight', autoHideCheckbox.checked);
         }
-
-        monitorInterval = setInterval(monitorFlight, 1000);
-        setInterval(updateCalVertS, 25);
-
-        resumeBtn.innerText = '✅ Resumed!';
-        resumeBtn.disabled = true;
-        startButton.innerText = '✅ Logger Running';
-        startButton.disabled = true;
-        callsignInput.disabled = true;
-
-        console.log(
-          `🔁 Flight resumed: ${resumeSession.callsign} from ${departureICAO}`
-        );
-        showToast(
-          `🔄 Flight resumed: ${resumeSession.callsign}<br>📍 From: ${departureICAO}<br>Position will be verified.`,
-          'success',
-          6000
-        );
-
-        if (panelUI && window.instruments && window.instruments.visible) {
-          panelUI.style.opacity = '0';
-          setTimeout(() => (panelUI.style.display = 'none'), 500);
-        }
-      } else {
-        alert('❌ No valid flight session found to resume.');
-      }
     };
-    sessionSection.appendChild(resumeBtn);
-    content.appendChild(sessionSection);
-    panelUI.appendChild(content);
+    settingsSection.appendChild(autoHideLabel);
+    content.appendChild(settingsSection);
 
     // --- Footer ---
     const footer = document.createElement('div');
     footer.className = 'saw-footer';
-
     const warningStatus = document.createElement('div');
     const currentWarnings = getTeleportWarnings();
     warningStatus.className = `warning-status ${currentWarnings > 0 ? 'warn' : 'ok'}`;
     warningStatus.innerHTML = `⚠️ Teleport Warnings: ${currentWarnings}/2`;
     footer.appendChild(warningStatus);
+
+    panelUI.appendChild(content);
     panelUI.appendChild(footer);
-
     document.body.appendChild(panelUI);
-    updateAirlineSelect();
-  }
 
+    updateAirlineSelect();
+
+    if (isFlightActive && sessionData) {
+        callsignInput.value = sessionData.callsign || '';
+        callsignInput.disabled = true;
+        startButton.innerText = '✅ Logger Running';
+        startButton.disabled = true;
+
+        if (sessionData.selectedAirline) {
+            const targetOption = Array.from(airlineSelect.options).find(
+                option => option.getAttribute('data-airline-name') === sessionData.selectedAirline
+            );
+            if (targetOption) airlineSelect.value = targetOption.value;
+        }
+    } else {
+        startButton.innerText = '📋 Activate Logger';
+        startButton.disabled = true;
+    }
+  }
 
   function updatePanelVisibility() {
     if (panelUI) {
-      panelUI.style.display =
-        window.instruments && window.instruments.visible ? 'block' : 'none';
+      const instrumentsVisible = window.instruments && window.instruments.visible;
+      if (flightStarted) {
+          if (localStorage.getItem(AUTOHIDE_KEY) === 'true') {
+              panelUI.classList.toggle('hidden-during-flight', !instrumentsVisible);
+          } else {
+              panelUI.style.display = 'none';
+          }
+      } else {
+          panelUI.style.display = instrumentsVisible ? 'block' : 'none';
+      }
     }
-    setTimeout(updatePanelVisibility, 100);
+    setTimeout(updatePanelVisibility, 200);
   }
+
+  function initializeLogger() {
+    const session = loadSession();
+    if (session && session.flightStarted) {
+        console.log(`✈️ Resuming previous flight: ${session.callsign}`);
+        flightStarted = session.flightStarted;
+        flightStartTime = session.flightStartTime;
+        departureICAO = session.departureICAO;
+        departureAirportData = session.departureAirportData;
+        currentFlightTeleported = session.currentFlightTeleported;
+        firstGroundContact = session.firstGroundContact;
+
+        monitorInterval = setInterval(monitorFlight, 1000);
+        setInterval(updateCalVertS, 25);
+        sessionSaveInterval = setInterval(saveSession, 15000);
+
+        createSidePanel(true, session);
+        showToast('✈️ Previous flight session<br>automatically resumed.', 'success', 5000);
+    } else {
+        createSidePanel(false);
+    }
+    setTimeout(updatePanelVisibility, 1000);
+  }
+
 
   window.addEventListener('load', () => {
     console.log('✅ GeoFS SAW Flight Logger loaded');
 
-    if (localStorage.getItem(TERMS_AGREED_KEY) === 'true') {
-      console.log(
-        '✅ SAW system terms already agreed, initializing Flight Logger'
-      );
-      createSidePanel();
-      setTimeout(updatePanelVisibility, 1000);
+    if (hasAgreedToTerms()) {
+      console.log('✅ SAW system terms already agreed, initializing Flight Logger');
+      initializeLogger();
     } else {
       console.log('📋 First time user, showing SAW system terms of use');
       setTimeout(showTermsDialog, 2000);
