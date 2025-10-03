@@ -189,7 +189,7 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 - **Repository**: [SAW-flight-logger/SAW-flight-logger](https://github.com/SAW-flight-logger/SAW-flight-logger)
 - **Issues**: [GitHub Issues](https://github.com/SAW-flight-logger/SAW-flight-logger/issues)
-- **Discord**: Contact seabus0316 for support questions
+- **Discord**: Contact `jthweb` for support questions
 
 ---
 
