@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  const WEBHOOK_URL = "https://discord.com/api/webhooks/1406257491200966676/uo2BElGKf3Z2OTy2KGskd-cuIzKdiJSlgkiYUd9Hd0_622E0xE88Xigmqp4we6Woepxl";
+  const WEBHOOK_URL = ;
   const STORAGE_KEY = "geofs_flight_logger_session";
   const AIRLINES_KEY = "geofs_flight_logger_airlines";
   const LAST_AIRLINE_KEY = "geofs_flight_logger_last_airline";
