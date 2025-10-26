@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  const WEBHOOK_URL = ;
+  const WEBHOOK_URL = "";
   const STORAGE_KEY = "geofs_flight_logger_session";
   const AIRLINES_KEY = "geofs_flight_logger_airlines";
   const LAST_AIRLINE_KEY = "geofs_flight_logger_last_airline";
@@ -40,6 +40,8 @@
   let bounces = 0;
   let isGrounded = true;
   let justLanded = false;
+  let hasPassedThreshold25 = false;
+  let teleportDetectionActive = false;
 
   // Flight path tracking and teleportation detection
   let flightPath = [];
@@ -54,6 +56,9 @@
   let pathLengthHistory = [];
   let hasSeenMultiplePaths = false;
   let multiplePathsTimer = null;
+  let mapPathSegments = []; // Track distinct path segments
+  let lastMapPathLength = 0;
+  let pathGapDetected = false;
 
   // ====== Load airports database ======
   fetch("https://raw.githubusercontent.com/mwgg/Airports/master/airports.json")
@@ -106,6 +111,7 @@
   function checkTeleportation(lat, lon, altitude) {
     if (!lastPosition || !flightStarted || flightTerminated) return false;
     if (resumeGracePeriod) return false;
+    if (!teleportDetectionActive) return false; // Only check after 25 AGL threshold
 
     const now = Date.now();
     const timeDiff = (now - lastPositionTime) / 1000;
@@ -168,28 +174,37 @@
   function updateFlightPath(lat, lon, altitude) {
     const now = Date.now();
 
-    // Check if GeoFS map path was cleared (teleportation indicator)
+    // Advanced path segment tracking for teleportation detection
     if (typeof flight !== 'undefined' && flight.recorder && flight.recorder.mapPath) {
       const currentMapPathLength = flight.recorder.mapPath.length;
 
-      // Track if we've ever seen multiple paths (indicates flight is established)
-      if (currentMapPathLength >= 2) {
-        hasSeenMultiplePaths = true;
+      // Detect path gaps (resume indicator) vs path collapse (teleportation)
+      if (currentMapPathLength > lastMapPathLength && lastMapPathLength > 0) {
+        // Path grew = normal continuation
+        pathGapDetected = false;
+      } else if (currentMapPathLength < lastMapPathLength && lastMapPathLength > 1) {
+        // Path shrank but we have history = potential gap/resume
+        pathGapDetected = true;
+        console.log(`🔄 Path gap detected: ${lastMapPathLength} → ${currentMapPathLength}`);
+      } else if (currentMapPathLength === 1 && lastMapPathLength > 2 && !pathGapDetected) {
+        // Path collapsed to single point when we had multiple = TELEPORTATION
+        console.warn(`🚨 PATH COLLAPSE DETECTED: ${lastMapPathLength} paths → 1 path (teleportation signature)`);
+        handleTeleportation();
+        if (flightTerminated) {
+          lastMapPathLength = currentMapPathLength;
+          return;
+        }
       }
 
-      // Track path length history
-      pathLengthHistory.push(currentMapPathLength);
-      if (pathLengthHistory.length > 10) pathLengthHistory.shift();
+      lastMapPathLength = currentMapPathLength;
 
-      // Only check for clearing if we've established multiple paths before
-      if (pathLengthHistory.length >= 5 && hasSeenMultiplePaths) {
-        const previousAvg = pathLengthHistory.slice(0, -1).reduce((a, b) => a + b, 0) / (pathLengthHistory.length - 1);
-
-        // If we HAD multiple paths and now dropped to 1, that's a teleport (clearing)
-        if (previousAvg >= 1.5 && currentMapPathLength === 1 && flightStarted && !resumeGracePeriod) {
-          console.warn("🚨 Path clearing detected: " + Math.round(previousAvg) + " paths → " + currentMapPathLength + " path (teleportation)");
-          pathContinuityBroken = true;
-        }
+      // Track path segments for resume detection
+      if (currentMapPathLength >= 2) {
+        mapPathSegments.push({
+          timestamp: now,
+          length: currentMapPathLength,
+          gapIndicated: pathGapDetected
+        });
       }
     }
 
@@ -720,9 +735,12 @@
       isGrounded = onGround;
     }
 
-    if (!flightStarted && !onGround && agl > 100) {
+    // Start flight only after passing 50 AGL (not 100)
+    if (!flightStarted && !onGround && agl > 50) {
       flightStarted = true;
       flightStartTime = now;
+      hasPassedThreshold25 = false;
+      teleportDetectionActive = true; // Start detecting immediately after takeoff
       const nearestAirport = getNearestAirport(lat, lon);
       if (nearestAirport) {
         departureICAO = nearestAirport.icao;
@@ -741,17 +759,19 @@
       resumeGracePeriod = false;
       pathLengthHistory = [];
       hasSeenMultiplePaths = false;
+      mapPathSegments = [];
+      lastMapPathLength = 0;
+      pathGapDetected = false;
       if (resumeGraceTimer) clearTimeout(resumeGraceTimer);
       if (multiplePathsTimer) clearTimeout(multiplePathsTimer);
 
-      // Set hasSeenMultiplePaths to true after 15 seconds
-      multiplePathsTimer = setTimeout(() => {
-        hasSeenMultiplePaths = true;
-        console.log("📍 Multiple paths detection enabled after 15s");
-      }, 15000);
+      // Enable multiple paths detection immediately
+      hasSeenMultiplePaths = true;
+      console.log("📍 Multiple paths detection enabled (immediately after takeoff)");
 
       saveSession();
-      console.log(`🛫 Departure detected at ${departureICAO}`);
+      console.log(`🛫 Departure detected at ${departureICAO} (AGL > 50ft)`);
+      console.log("📡 Teleportation detection ACTIVE (right after takeoff)");
       if (panelUI) {
         if (window.instruments && window.instruments.visible) {
           panelUI.style.opacity = "0";
@@ -760,16 +780,32 @@
       }
     }
 
+    // Activate teleportation detection on resume
+    if (flightStarted && resumeGracePeriod && !teleportDetectionActive) {
+      teleportDetectionActive = true;
+      console.log("📡 Teleportation detection ACTIVE (after resume)");
+    }
+
+    // Landing detection: trigger Landing Stats addon when AGL drops below 25
     const elapsed = (now - flightStartTime) / 1000;
-    if (flightStarted && !firstGroundContact && onGround) {
+    const landingStatsActive = typeof window.statsOpen !== 'undefined' && window.statsOpen;
+
+    if (flightStarted && !firstGroundContact && onGround && landingStatsActive && enhancedAGL >= 0 && enhancedAGL < 500) {
       if (elapsed < 1) return;
 
-      if (justLanded) {
-        bounces++;
-      }
+      // Force recalculate V/S at exact landing moment to match Landing Stats addon timing
+      const enhancedAGLNow = (values.altitude !== undefined && values.groundElevationFeet !== undefined) ?
+        ((values.altitude - values.groundElevationFeet) +
+         (geofs.aircraft.instance.collisionPoints[geofs.aircraft.instance.collisionPoints.length - 2].worldPosition[2] * 3.2808399))
+        : 'N/A';
 
-      const vs = calculatedVerticalSpeed !== 0 && Math.abs(calculatedVerticalSpeed) < 5000
-        ? calculatedVerticalSpeed
+      const preciseCalVertS = (enhancedAGLNow - oldAGL) * (60000 / (now - oldTime));
+
+      // Use Landing Stats addon value if available and valid, otherwise use recalculated value
+      const vs = (typeof window.calVertS !== 'undefined' && Math.abs(window.calVertS) < 5000)
+        ? window.calVertS
+        : Math.abs(preciseCalVertS) < 5000
+        ? preciseCalVertS
         : values.verticalSpeed || 0;
 
       let quality;
@@ -877,6 +913,8 @@
     arrivalICAO = "UNKNOWN";
     departureAirportData = null;
     arrivalAirportData = null;
+    hasPassedThreshold25 = false;
+    teleportDetectionActive = false;
 
     bounces = 0;
     isGrounded = true;
@@ -896,6 +934,9 @@
     resumeGracePeriod = false;
     pathLengthHistory = [];
     hasSeenMultiplePaths = false;
+    mapPathSegments = [];
+    lastMapPathLength = 0;
+    pathGapDetected = false;
     if (resumeGraceTimer) clearTimeout(resumeGraceTimer);
     if (multiplePathsTimer) clearTimeout(multiplePathsTimer);
 
