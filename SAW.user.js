@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Auto-Airport Flight Logger (GeoFS)
 // @namespace    https://your-va.org/flightlogger
-// @version      2025-09-06
+// @version      2025-10-26
 // @description  Logs flights with crash detection, auto ICAO detection, session recovery & terrain-based AGL check
 // @match        http://*/geofs.php*
 // @match        https://*/geofs.php*
@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  const WEBHOOK_URL = "";
+  const WEBHOOK_URL = "https://discord.com/api/webhooks/1427603258335301632/Want to steal webhook url? You clown";
   const STORAGE_KEY = "geofs_flight_logger_session";
   const AIRLINES_KEY = "geofs_flight_logger_airlines";
   const LAST_AIRLINE_KEY = "geofs_flight_logger_last_airline";
