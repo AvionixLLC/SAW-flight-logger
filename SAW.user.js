@@ -17,6 +17,7 @@
   const AIRLINES_KEY = "geofs_flight_logger_airlines";
   const LAST_AIRLINE_KEY = "geofs_flight_logger_last_airline";
   const TERMS_AGREED_KEY = "geofs_flight_logger_terms_agreed";
+  const DISCORD_ID_KEY = "geofs_flight_logger_discord_id";
 
   let flightStarted = false;
   let flightStartTime = null;
