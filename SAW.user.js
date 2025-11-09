@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Auto-Airport Flight Logger (GeoFS) [Improved UI & Codeshare]
+// @name         Auto-Airport Flight Logger (GeoFS) [Qatar Theme, Codeshare, Draggable]
 // @namespace    https://your-va.org/flightlogger
-// @version      2025-10-27
+// @version      2025-10-29
 // @description  Logs flights with crash detection, auto ICAO, session recovery, codeshare support, and a modern UI.
 // @match        http://*/geofs.php*
 // @match        https://*/geofs.php*
@@ -16,9 +16,10 @@
   const WEBHOOK_URL = "https://discord.com/api/webhooks/1427603258335301632/Want to steal webhook url? You clown"; // Default fallback
   const STORAGE_KEY = "geofs_flight_logger_session";
   const AIRLINES_KEY = "geofs_flight_logger_airlines";
-  const LAST_AIRLINES_KEY = "geofs_flight_logger_last_airlines"; // Changed from LAST_AIRLINE_KEY
+  const LAST_AIRLINES_KEY = "geofs_flight_logger_last_airlines";
   const TERMS_AGREED_KEY = "geofs_flight_logger_terms_agreed";
   const DISCORD_ID_KEY = "geofs_flight_logger_discord_id";
+  const PILOT_NAME_KEY = "geofs_flight_logger_pilot_name";
 
   // --- FLIGHT STATE VARIABLES ---
   let flightStarted = false;
@@ -35,6 +36,7 @@
 
   // --- UI ELEMENT VARIABLES ---
   let panelUI, startButton, callsignInput, airlineListContainer, resumeBtn, toggleBtn, contentUI;
+  let pilotNameInput, discordIdInput;
 
   // Enhanced landing stats variables
   let oldAGL = 0, newAGL = 0;
@@ -168,7 +170,7 @@
       case 'crash': toast.style.background = 'linear-gradient(135deg, #ff4444, #cc0000)'; break;
       case 'success': toast.style.background = 'linear-gradient(135deg, #00ff44, #00cc00)'; break;
       case 'warning': toast.style.background = 'linear-gradient(135deg, #ffaa00, #ff8800)'; break;
-      default: toast.style.background = 'linear-gradient(135deg, #0099ff, #0066cc)';
+      default: toast.style.background = 'linear-gradient(135deg, #5c0632, #7b0843)'; // Qatar theme for info
     }
     toast.innerHTML = message;
     document.body.appendChild(toast);
@@ -226,8 +228,11 @@
 
       // Send termination message to all selected Discord webhooks
       const urls = getSelectedWebhookURLs();
+      const selectedAirlineNames = getSelectedAirlines(); // Get names
+      const codeshareInfo = selectedAirlineNames.join(', '); // Create string
+
       if (urls.length > 0) {
-        urls.forEach(url => sendTerminationToDiscord(url));
+        urls.forEach(url => sendTerminationToDiscord(url, codeshareInfo)); // Pass info
       } else {
         console.warn("No airline selected. Termination notice not sent.");
       }
@@ -295,6 +300,8 @@
       flightStartTime,
       departureICAO,
       callsign: callsignInput?.value.trim() || "Unknown",
+      pilotName: pilotNameInput?.value.trim() || "Unknown", // Save pilot name
+      discordId: discordIdInput?.value.trim() || "Unknown", // Save discord ID
       aircraft: getAircraftName(),
       firstGroundContact,
       departureAirportData,
@@ -526,39 +533,58 @@
 
   // ====== DISCORD LOGGING ======
 
-  function sendTerminationToDiscord(webhookUrl) {
+  function sendTerminationToDiscord(webhookUrl, codeshareInfo = "") {
     if (!callsignInput || !flightStartTime || !departureICAO) {
       console.warn("⚠️ Cannot send termination - missing flight data");
       return;
     }
 
-    // Use the callsign exactly as entered
-    const pilot = callsignInput.value.trim().toUpperCase() || "Unknown";
+    const pilotCallsign = callsignInput.value.trim().toUpperCase() || "Unknown";
+    const pilotName = pilotNameInput?.value.trim() || geofs?.userRecord?.callsign || "Unknown";
+    const discordId = discordIdInput?.value.trim() || "Not Set";
     const aircraft = getAircraftName();
     const durationMin = Math.round((Date.now() - flightStartTime) / 60000);
     const hours = Math.floor(durationMin / 60);
     const minutes = durationMin % 60;
     const formattedDuration = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
 
+    const fields = [
+      {
+        name: "👤 Pilot",
+        value: `**Name**: ${pilotName}\n**Discord**: ${discordId}`,
+        inline: true
+      },
+      {
+        name: "✈️ Flight",
+        value: `**Callsign**: ${pilotCallsign}\n**Aircraft**: ${aircraft}`,
+        inline: true
+      },
+      { name: "📍 Route", value: `**Departure**: ${departureICAO}\n**Arrival**: N/A`, inline: true },
+      { name: "⏱️ Flight Time", value: `${formattedDuration}`, inline: true },
+      {
+        name: "⚠️ Termination Reason",
+        value: `**Multiple teleportations detected**\nFlight integrity compromised after 2 warnings. This flight has been voided.`,
+        inline: false
+      }
+    ];
+
+    if (codeshareInfo) {
+        fields.push({
+            name: "🌐 Intended Airlines",
+            value: codeshareInfo,
+            inline: false
+        });
+    }
+
     const message = {
       embeds: [{
         title: "🚫 Flight Terminated - GeoFS",
-        color: 0xFF0000,
-        fields: [
-          {
-            name: "✈️ Flight Information",
-            value: `**Flight no.**: ${pilot}\n**Pilot name**: ${geofs?.userRecord?.callsign || "Unknown"}\n**Aircraft**: ${aircraft}`,
-            inline: false
-          },
-          { name: "📍 Route", value: `**Departure**: ${departureICAO}\n**Arrival**: TELEPORT`, inline: true },
-          { name: "⏱️ Duration", value: `**Flight Time**: ${formattedDuration}`, inline: true },
-          {
-            name: "⚠️ Termination Reason",
-            value: `**Multiple teleportations detected**\nFlight integrity compromised after 2 warnings.`,
-            inline: false
-          }
-        ],
+        color: 0xD63031, // Red
+        fields: fields,
         timestamp: new Date().toISOString(),
+        thumbnail: {
+            url: "https://img.icons8.com/fluency/48/000000/cancel--v1.png" // A termination/cancel icon
+        },
         footer: { text: "GeoFS Flight Logger | Flight Not Logged" }
       }]
     };
@@ -578,38 +604,92 @@
 
     let embedColor;
     switch(data.landingQuality) {
-      case "SUPER BUTTER": embedColor = 0x00FF00; break;
-      case "BUTTER": embedColor = 0x00FF00; break;
-      case "ACCEPTABLE": embedColor = 0xFFFF00; break;
-      case "HARD": embedColor = 0xFF8000; break;
-      case "CRASH": embedColor = 0xDC143C; break;
-      default: embedColor = 0x0099FF; break;
+      case "SUPER BUTTER": embedColor = 0x00B894; break; // Greener
+      case "BUTTER": embedColor = 0x55E6C1; break; // Lighter Green
+      case "ACCEPTABLE": embedColor = 0xFDCB6E; break; // Yellow
+      case "HARD": embedColor = 0xE17055; break; // Orange
+      case "CRASH": embedColor = 0xD63031; break; // Red
+      default: embedColor = 0x5c0632; break; // Qatar theme
     }
+    
+    // Add "CRASH" text to title if it was a crash
+    const title = data.landingQuality === "CRASH" ? "🛫 Flight PIREP (CRASH) - GeoFS" : "🛫 Flight PIREP - GeoFS";
 
     const fields = [
+      // Row 1: Pilot & Flight
       {
-        name: "✈️ Flight Information",
-        value: `**Flight no.**: ${data.pilot}\n**Pilot name**: ${geofs?.userRecord?.callsign || "Unknown"}\n**Aircraft**: ${data.aircraft}`,
-        inline: false
-      },
-      { name: "📍 Route", value: `**Departure**: ${data.dep}\n**Arrival**: ${data.arr}`, inline: true },
-      { name: "⏱️ Duration", value: `**Flight Time**: ${data.duration}`, inline: true },
-      {
-        name: "📊 Flight Data",
-        value: `**V/S**: ${data.vs} fpm\n**G-Force**: ${data.gforce}\n**TAS**: ${data.ktrue} kts\n**GS**: ${data.gs} kts`,
+        name: "👤 Pilot",
+        value: `**Name**: ${data.pilotName}\n**Discord**: ${data.discordId}`,
         inline: true
       },
       {
-        name: "🏁 Landing Quality",
-        value: `**${data.landingQuality}**${data.bounces > 0 ? `\n**Bounces**: ${data.bounces}` : ''}`,
+        name: "✈️ Flight",
+        value: `**Callsign**: ${data.pilotCallsign}\n**Aircraft**: ${data.aircraft}`,
+        inline: true
+      },
+      // Row 2: Route & Time
+      {
+        name: "📍 Route",
+        value: `**${data.dep}** → **${data.arr}**`,
+        inline: false
+      },
+      {
+        name: "🛫 Departure",
+        value: takeoffTime,
         inline: true
       },
       {
-        name: "🕓 Times",
-        value: `**Takeoff**: ${takeoffTime}\n**Landing**: ${landingTime}`,
-        inline: false
-      }
+        name: "🛬 Arrival",
+        value: landingTime,
+        inline: true
+      },
+      {
+        name: "⏱️ Flight Time",
+        value: data.duration,
+        inline: true
+      },
+      // Row 3: Landing Stats
+      {
+        name: "📊 Landing V/S",
+        value: `\`${data.vs} fpm\``,
+        inline: true
+      },
+      {
+        name: "💥 G-Force",
+        value: `\`${data.gforce} G\``,
+        inline: true
+      },
+      {
+        name: "🔄 Bounces",
+        value: `\`${data.bounces}\``,
+        inline: true
+      },
+      // Row 4: Speeds at Touchdown
+      {
+        name: "💨 True Airspeed",
+        value: `\`${data.ktrue} kts\``,
+        inline: true
+      },
+      {
+        name: "👟 Ground Speed",
+        value: `\`${data.gs} kts\``,
+        inline: true
+      },
+      {
+        name: "🏆 Result",
+        value: `**${data.landingQuality}**`,
+        inline: true
+      },
     ];
+
+    // Row 5: Codeshare info, if present
+    if (data.codeshareAirlines) {
+        fields.push({
+            name: "🌐 Codeshare Airlines",
+            value: data.codeshareAirlines,
+            inline: false
+        });
+    }
 
     if (data.teleportWarnings > 0) {
       fields.push({
@@ -617,17 +697,20 @@
         value: `**Teleportation detected**: ${data.teleportWarnings} time(s)\n*Flight continued with noted violation*`,
         inline: false
       });
-      embedColor = 0xFFA500;
+      embedColor = 0xFFA500; // Override color to warning
     }
 
     const message = {
       embeds: [{
-        title: "🛫 Flight Report - GeoFS",
+        title: title,
         color: embedColor,
         fields: fields,
         timestamp: new Date().toISOString(),
+        thumbnail: {
+            url: "https://img.icons8.com/external-flatart-icons-flat-flatarticons/64/000000/external-plane-shipping-and-delivery-flatart-icons-flat-flatarticons.png" // A generic, clean plane icon
+        },
         footer: {
-          text: "GeoFS Flight Logger" + (data.teleportWarnings > 0 ? " | ⚠️ Integrity Warning" : "")
+          text: "GeoFS SAW Flight Logger" + (data.teleportWarnings > 0 ? " | ⚠️ Integrity Warning" : "")
         }
       }]
     };
@@ -778,16 +861,23 @@
       const tas = geofs.aircraft.instance.trueAirSpeed?.toFixed(1) || "N/A";
       const landingBounces = typeof window.bounces !== 'undefined' ? window.bounces : bounces;
 
-      // Use callsign exactly as entered
-      const pilot = callsignInput.value.trim().toUpperCase() || "Unknown";
+      const pilotCallsign = callsignInput.value.trim().toUpperCase() || "Unknown";
+      const pilotName = pilotNameInput?.value.trim() || geofs?.userRecord?.callsign || "Unknown";
+      const discordId = discordIdInput?.value.trim() || "Not Set";
       const aircraft = getAircraftName();
       const durationMin = Math.round((firstGroundTime - flightStartTime) / 60000);
       const hours = Math.floor(durationMin / 60);
       const minutes = durationMin % 60;
       const formattedDuration = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+      
+      const selectedAirlineNames = getSelectedAirlines(); // Get the names
+      const codeshareInfo = selectedAirlineNames.join(', '); // Add to logData
 
       const logData = {
-        pilot, aircraft,
+        pilotCallsign,
+        pilotName,
+        discordId,
+        aircraft,
         takeoff: flightStartTime,
         landing: firstGroundTime,
         dep: departureICAO,
@@ -799,7 +889,8 @@
         ktrue: tas,
         landingQuality: quality,
         bounces: landingBounces,
-        teleportWarnings: teleportWarnings
+        teleportWarnings: teleportWarnings,
+        codeshareAirlines: codeshareInfo // Add codeshare string
       };
 
       // Send log to all selected webhooks
@@ -861,8 +952,12 @@
     if (resumeGraceTimer) clearTimeout(resumeGraceTimer);
 
     callsignInput.value = "";
+    // Note: We DO NOT clear pilotNameInput or discordIdInput, as they are user settings.
     startButton.disabled = true;
-    startButton.innerText = "📋 Start Flight Logger";
+    startButton.innerText = "📋 Start Logger";
+    resumeBtn.disabled = false;
+    resumeBtn.innerText = "⏪ Resume Last Flight";
+
     if (panelUI) {
       if (window.instruments && window.instruments.visible) {
         panelUI.classList.remove('saw-hidden');
@@ -909,10 +1004,10 @@
     });
 
     dialog.innerHTML = `
-      <h2 style="color: #00C8FF; margin-top: 0;">GeoFS SAW Flight Logger - Terms of Use</h2>
+      <h2 style="color: #5c0632; margin-top: 0;">GeoFS SAW Flight Logger - Terms of Use</h2>
       <div style="background: #2a2a2a; padding: 20px; border-radius: 5px; margin: 20px 0; max-height: 300px; overflow-y: auto;">
         <h3>📜 Terms and Conditions of the SAW System</h3>
-        <div style="background: #333; padding: 15px; border-left: 4px solid #00C8FF; margin: 15px 0;">
+        <div style="background: #333; padding: 15px; border-left: 4px solid #5c0632; margin: 15px 0;">
           <p><strong>1. Flight Integrity Agreement</strong><br>
           You agree not to fake flights with this script. All recorded flights must be genuine flight simulation activities performed in GeoFS.</p>
           <p><strong>2. Modification Restrictions</strong><br>
@@ -940,7 +1035,7 @@
         The author reserves the right to modify these terms at any time. Continued use indicates acceptance of the modified terms.</p>
       </div>
       <div style="text-align: center; margin-top: 25px;">
-        <button id="agreeBtn" style="background: #00C8FF; color: white; border: none; padding: 12px 25px; margin: 0 10px; border-radius: 5px; cursor: pointer; font-size: 16px;">✅ I Agree</button>
+        <button id="agreeBtn" style="background: #5c0632; color: white; border: none; padding: 12px 25px; margin: 0 10px; border-radius: 5px; cursor: pointer; font-size: 16px;">✅ I Agree</button>
         <button id="disagreeBtn" style="background: #ff4444; color: white; border: none; padding: 12px 25px; margin: 0 10px; border-radius: 5px; cursor: pointer; font-size: 16px;">❌ I Disagree</button>
       </div>
       <p style="text-align: center; margin-top: 20px; font-size: 12px; color: #888;">Selecting "I Disagree" will prevent the use of GeoFS SAW Flight Logger</p>
@@ -974,15 +1069,15 @@
     const style = document.createElement('style');
     style.innerHTML = `
       :root {
-        --saw-bg: rgba(20, 20, 20, 0.95);
-        --saw-header-bg: rgba(0, 0, 0, 0.8);
-        --saw-border: #444;
+        --saw-bg: rgba(30, 30, 30, 0.95);
+        --saw-header-bg: #5c0632; /* Qatar Burgundy */
+        --saw-border: #5c0632;
         --saw-text: #eee;
         --saw-text-label: #aaa;
         --saw-input-bg: #222;
         --saw-input-border: #555;
-        --saw-btn-primary: #0099ff;
-        --saw-btn-primary-hover: #00bfff;
+        --saw-btn-primary: #5c0632; /* Qatar Burgundy */
+        --saw-btn-primary-hover: #7b0843;
         --saw-btn-secondary: #3a3a3a;
         --saw-btn-secondary-hover: #4a4a4a;
         --saw-btn-green: #008800;
@@ -994,9 +1089,9 @@
       }
       #sawLoggerPanel {
         position: absolute;
-        bottom: 50px;
+        top: 150px; /* Changed from bottom */
         left: 10px;
-        width: 240px;
+        width: 250px; /* Slightly wider for new fields */
         background: var(--saw-bg);
         color: var(--saw-text);
         border: 1px solid var(--saw-border);
@@ -1022,11 +1117,14 @@
         padding: 8px 12px;
         background: var(--saw-header-bg);
         border-bottom: 1px solid var(--saw-border);
-        cursor: grab;
+        cursor: grab; /* For dragging */
+      }
+      #sawLoggerPanel .saw-header:active {
+        cursor: grabbing;
       }
       #sawLoggerPanel .saw-header span {
         font-weight: bold;
-        color: #00C8FF;
+        color: #FFFFFF; /* White text on burgundy */
       }
       #sawLoggerPanel .saw-header #sawToggleBtn {
         width: 20px;
@@ -1044,9 +1142,9 @@
         padding: 12px;
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 10px; /* Increased gap */
         transition: all 0.3s ease-out;
-        max-height: 500px;
+        max-height: 600px; /* Increased max height */
       }
       #sawLoggerPanel.saw-collapsed .saw-content {
         max-height: 0;
@@ -1058,6 +1156,7 @@
         font-size: 12px;
         color: var(--saw-text-label);
         font-weight: bold;
+        margin-bottom: -5px; /* Tighten label to input */
       }
       #sawLoggerPanel input[type="text"],
       #sawLoggerPanel select {
@@ -1067,10 +1166,14 @@
         border: 1px solid var(--saw-input-border);
         border-radius: 4px;
         color: var(--saw-text);
-        box-sizing: border-box; /* Important */
+        box-sizing: border-box;
+      }
+      #sawLoggerPanel input[type="text"]:focus {
+        border-color: var(--saw-btn-primary);
+        outline: none;
       }
       #sawLoggerPanel #sawAirlineList {
-        max-height: 150px;
+        max-height: 120px; /* Adjusted height */
         overflow-y: auto;
         background: var(--saw-input-bg);
         border: 1px solid var(--saw-input-border);
@@ -1084,13 +1187,14 @@
       }
       #sawLoggerPanel .saw-airline-item input[type="checkbox"] {
         margin-right: 8px;
-        accent-color: var(--saw-btn-primary);
+        accent-color: var(--saw-btn-primary); /* Qatar theme */
       }
       #sawLoggerPanel .saw-airline-item label {
         font-size: 13px;
         color: var(--saw-text);
         font-weight: normal;
         cursor: pointer;
+        margin-bottom: 0;
       }
       #sawLoggerPanel .saw-no-airlines {
         font-style: italic;
@@ -1151,6 +1255,41 @@
     );
   }
 
+  function makeDraggable(panel, header) {
+    let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+    header.onmousedown = dragMouseDown;
+
+    function dragMouseDown(e) {
+      e = e || window.event;
+      e.preventDefault();
+      // Get the mouse cursor position at startup:
+      pos3 = e.clientX;
+      pos4 = e.clientY;
+      document.onmouseup = closeDragElement;
+      // Call a function whenever the cursor moves:
+      document.onmousemove = elementDrag;
+    }
+
+    function elementDrag(e) {
+      e = e || window.event;
+      e.preventDefault();
+      // Calculate the new cursor position:
+      pos1 = pos3 - e.clientX;
+      pos2 = pos4 - e.clientY;
+      pos3 = e.clientX;
+      pos4 = e.clientY;
+      // Set the element's new position:
+      panel.style.top = (panel.offsetTop - pos2) + "px";
+      panel.style.left = (panel.offsetLeft - pos1) + "px";
+    }
+
+    function closeDragElement() {
+      // Stop moving when mouse button is released:
+      document.onmouseup = null;
+      document.onmousemove = null;
+    }
+  }
+
   function createSidePanel() {
     injectStyles();
 
@@ -1163,8 +1302,14 @@
         <button id="sawToggleBtn">−</button>
       </div>
       <div class="saw-content">
-        <label for="sawCallsign">Full Callsign:</label>
-        <input id="sawCallsign" type="text" placeholder="e.g., EVA123">
+        <label for="sawPilotName">Pilot Name:</label>
+        <input id="sawPilotName" type="text" placeholder="e.g., John Doe">
+
+        <label for="sawDiscordId">Discord ID:</label>
+        <input id="sawDiscordId" type="text" placeholder="e.g., 1234567890">
+
+        <label for="sawCallsign">Flight Callsign:</label>
+        <input id="sawCallsign" type="text" placeholder="e.g., QTR123">
         
         <label>Airlines (Codeshare):</label>
         <div id="sawAirlineList">
@@ -1185,21 +1330,37 @@
 
     // Assign UI elements to variables
     contentUI = panelUI.querySelector('.saw-content');
+    const headerUI = panelUI.querySelector('.saw-header');
     callsignInput = document.getElementById('sawCallsign');
+    pilotNameInput = document.getElementById('sawPilotName'); // New
+    discordIdInput = document.getElementById('sawDiscordId'); // New
     airlineListContainer = document.getElementById('sawAirlineList');
     startButton = document.getElementById('sawStartButton');
     resumeBtn = document.getElementById('sawResumeButton');
     toggleBtn = document.getElementById('sawToggleBtn');
 
-    // Add event listeners
+    // --- Load saved user settings ---
+    pilotNameInput.value = localStorage.getItem(PILOT_NAME_KEY) || "";
+    discordIdInput.value = localStorage.getItem(DISCORD_ID_KEY) || "";
+
+    // --- Add event listeners ---
+    makeDraggable(panelUI, headerUI); // Make panel draggable
+
     document.getElementById('sawAddAirline').onclick = addNewAirline;
     document.getElementById('sawEditAirline').onclick = editAirline;
     document.getElementById('sawRemoveAirline').onclick = removeAirline;
 
     disableKeyPropagation(callsignInput);
+    disableKeyPropagation(pilotNameInput);
+    disableKeyPropagation(discordIdInput);
+
     callsignInput.onkeyup = () => {
       startButton.disabled = callsignInput.value.trim() === "";
     };
+    // Save user settings on change
+    pilotNameInput.onkeyup = () => localStorage.setItem(PILOT_NAME_KEY, pilotNameInput.value.trim());
+    discordIdInput.onkeyup = () => localStorage.setItem(DISCORD_ID_KEY, discordIdInput.value.trim());
+
 
     airlineListContainer.addEventListener('change', (e) => {
         if (e.target.type === 'checkbox') {
@@ -1229,6 +1390,9 @@
         departureAirportData = resumeSession.departureAirportData;
         firstGroundContact = resumeSession.firstGroundContact || false;
         callsignInput.value = resumeSession.callsign || "";
+        pilotNameInput.value = resumeSession.pilotName || localStorage.getItem(PILOT_NAME_KEY) || ""; // Load from session
+        discordIdInput.value = resumeSession.discordId || localStorage.getItem(DISCORD_ID_KEY) || ""; // Load from session
+
 
         flightPath = resumeSession.flightPath || [];
         teleportWarnings = resumeSession.teleportWarnings || 0;
@@ -1318,6 +1482,13 @@
       if (callsignInput) {
         callsignInput.value = resumeSession.callsign || "";
       }
+      if (pilotNameInput) {
+        pilotNameInput.value = resumeSession.pilotName || localStorage.getItem(PILOT_NAME_KEY) || "";
+      }
+      if (discordIdInput) {
+        discordIdInput.value = resumeSession.discordId || localStorage.getItem(DISCORD_ID_KEY) || "";
+      }
+
 
       monitorInterval = setInterval(monitorFlight, 1000);
       setInterval(updateCalVertS, 25);
@@ -1348,7 +1519,7 @@
 
   // ====== SCRIPT ENTRYPOINT ======
   window.addEventListener("load", () => {
-    console.log("✅ GeoFS SAW Flight Logger (Improved UI, Codeshare) Loaded");
+    console.log("✅ GeoFS SAW Flight Logger (Qatar Theme, Codeshare) Loaded");
 
     if (hasAgreedToTerms()) {
       console.log("✅ SAW system terms already agreed, initializing Flight Logger");
