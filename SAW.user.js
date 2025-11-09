@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Auto-Airport Flight Logger (GeoFS)
+// @name         Auto-Airport Flight Logger (GeoFS) [Improved UI & Codeshare]
 // @namespace    https://your-va.org/flightlogger
-// @version      2025-10-26
-// @description  Logs flights with crash detection, auto ICAO detection, session recovery & terrain-based AGL check
+// @version      2025-10-27
+// @description  Logs flights with crash detection, auto ICAO, session recovery, codeshare support, and a modern UI.
 // @match        http://*/geofs.php*
 // @match        https://*/geofs.php*
 // @run-at       document-end
@@ -12,13 +12,15 @@
 (function () {
   'use strict';
 
-  const WEBHOOK_URL = "https://discord.com/api/webhooks/1427603258335301632/Want to steal webhook url? You clown";
+  // --- CONSTANTS ---
+  const WEBHOOK_URL = "https://discord.com/api/webhooks/1427603258335301632/Want to steal webhook url? You clown"; // Default fallback
   const STORAGE_KEY = "geofs_flight_logger_session";
   const AIRLINES_KEY = "geofs_flight_logger_airlines";
-  const LAST_AIRLINE_KEY = "geofs_flight_logger_last_airline";
+  const LAST_AIRLINES_KEY = "geofs_flight_logger_last_airlines"; // Changed from LAST_AIRLINE_KEY
   const TERMS_AGREED_KEY = "geofs_flight_logger_terms_agreed";
   const DISCORD_ID_KEY = "geofs_flight_logger_discord_id";
 
+  // --- FLIGHT STATE VARIABLES ---
   let flightStarted = false;
   let flightStartTime = null;
   let departureICAO = "UNKNOWN";
@@ -27,17 +29,17 @@
   let monitorInterval = null;
   let firstGroundContact = false;
   let firstGroundTime = null;
-  let panelUI, startButton, callsignInput, aircraftInput, airlineSelect;
   let airportsDB = [];
   let departureAirportData = null;
   let arrivalAirportData = null;
 
-  // Enhanced landing stats variables - using terrain-calibrated calculation
-  let oldAGL = 0;
-  let newAGL = 0;
+  // --- UI ELEMENT VARIABLES ---
+  let panelUI, startButton, callsignInput, airlineListContainer, resumeBtn, toggleBtn, contentUI;
+
+  // Enhanced landing stats variables
+  let oldAGL = 0, newAGL = 0;
   let calculatedVerticalSpeed = 0;
-  let oldTime = Date.now();
-  let newTime = Date.now();
+  let oldTime = Date.now(), newTime = Date.now();
   let bounces = 0;
   let isGrounded = true;
   let justLanded = false;
@@ -50,14 +52,8 @@
   let lastPositionTime = null;
   let teleportWarnings = 0;
   let flightTerminated = false;
-  let pathContinuityBroken = false;
   let resumeGracePeriod = false;
   let resumeGraceTimer = null;
-  let lastPathChecksum = 0;
-  let pathLengthHistory = [];
-  let hasSeenMultiplePaths = false;
-  let multiplePathsTimer = null;
-  let mapPathSegments = []; // Track distinct path segments
   let lastMapPathLength = 0;
   let pathGapDetected = false;
 
@@ -77,6 +73,8 @@
       console.log(`✅ Loaded ${airportsDB.length} airports`);
     })
     .catch(err => console.error("❌ Airport DB load failed:", err));
+
+  // ====== UTILITY FUNCTIONS ======
 
   function getNearestAirport(lat, lon) {
     if (!airportsDB.length) return { icao: "UNKNOWN" };
@@ -109,29 +107,101 @@
     return R * c;
   }
 
+  function getAircraftName() {
+    let raw = geofs?.aircraft?.instance?.aircraftRecord?.name || "Unknown";
+    return raw.replace(/^\([^)]*\)\s*/, "");
+  }
+
+  function formatTimeWithTimezone(timestamp, airportData) {
+    let timeZone = 'UTC';
+    let suffix = 'UTC';
+
+    if (airportData && airportData.tz) {
+      timeZone = airportData.tz;
+      try {
+        const date = new Date(timestamp);
+        const timezoneName = date.toLocaleDateString('en', {
+          timeZone: timeZone,
+          timeZoneName: 'short'
+        }).split(', ')[1] || timeZone.split('/')[1] || 'LT';
+        suffix = timezoneName;
+      } catch (e) {
+        console.warn(`Invalid timezone ${timeZone}, falling back to UTC.`);
+        timeZone = 'UTC';
+        suffix = 'UTC';
+      }
+    }
+
+    const fmt = new Intl.DateTimeFormat('en-GB', {
+      timeZone: timeZone,
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+
+    return `${fmt.format(new Date(timestamp))} ${suffix}`;
+  }
+
+  function showToast(message, type = 'info', duration = 3000) {
+    const toast = document.createElement('div');
+    Object.assign(toast.style, {
+      position: 'fixed',
+      top: '20px',
+      right: '20px',
+      padding: '12px 20px',
+      borderRadius: '8px',
+      color: 'white',
+      fontWeight: 'bold',
+      fontSize: '14px',
+      fontFamily: 'sans-serif',
+      zIndex: '10001',
+      minWidth: '300px',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+      opacity: '0',
+      transform: 'translateX(100%)',
+      transition: 'all 0.3s ease-in-out'
+    });
+    switch(type) {
+      case 'crash': toast.style.background = 'linear-gradient(135deg, #ff4444, #cc0000)'; break;
+      case 'success': toast.style.background = 'linear-gradient(135deg, #00ff44, #00cc00)'; break;
+      case 'warning': toast.style.background = 'linear-gradient(135deg, #ffaa00, #ff8800)'; break;
+      default: toast.style.background = 'linear-gradient(135deg, #0099ff, #0066cc)';
+    }
+    toast.innerHTML = message;
+    document.body.appendChild(toast);
+    setTimeout(() => { toast.style.opacity = '1'; toast.style.transform = 'translateX(0)'; }, 10);
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateX(100%)';
+      setTimeout(() => { if (document.body.contains(toast)) document.body.removeChild(toast); }, 300);
+    }, duration);
+  }
+
+  // ====== SESSION & TELEPORTATION ======
+
   function checkTeleportation(lat, lon, altitude) {
     if (!lastPosition || !flightStarted || flightTerminated) return false;
     if (resumeGracePeriod) return false;
-    if (!teleportDetectionActive) return false; // Only check after 25 AGL threshold
+    if (!teleportDetectionActive) return false;
 
     const now = Date.now();
     const timeDiff = (now - lastPositionTime) / 1000;
 
-    if (timeDiff < 1) return false; // Increased from 0.5 to avoid rapid checks
-    if (timeDiff > 10) return false; // Ignore if too much time passed (tab inactive, etc)
+    if (timeDiff < 1) return false;
+    if (timeDiff > 10) return false;
 
     const distance = calculateDistance(lastPosition.lat, lastPosition.lon, lat, lon);
     const altChange = Math.abs(altitude - lastPosition.altitude);
 
-    // More lenient thresholds
-    const maxRealisticDistance = timeDiff * 0.6; // Increased from 0.5
-    const maxRealisticAltChange = timeDiff * 200; // Increased from 150
+    const maxRealisticDistance = timeDiff * 0.6;
+    const maxRealisticAltChange = timeDiff * 200;
 
-    // Only trigger if BOTH distance AND altitude are unrealistic
     if (distance > maxRealisticDistance && altChange > maxRealisticAltChange) {
       return true;
     }
-
     return false;
   }
 
@@ -154,16 +224,19 @@
       );
       console.error("❌ Flight terminated due to repeated teleportation");
 
-      // Send termination message to Discord BEFORE clearing
-      sendTerminationToDiscord();
+      // Send termination message to all selected Discord webhooks
+      const urls = getSelectedWebhookURLs();
+      if (urls.length > 0) {
+        urls.forEach(url => sendTerminationToDiscord(url));
+      } else {
+        console.warn("No airline selected. Termination notice not sent.");
+      }
 
-      // Wait a bit for the message to send before clearing
       setTimeout(() => {
         if (monitorInterval) {
           clearInterval(monitorInterval);
           monitorInterval = null;
         }
-
         clearSession();
         resetPanel();
       }, 500);
@@ -175,38 +248,21 @@
   function updateFlightPath(lat, lon, altitude) {
     const now = Date.now();
 
-    // Advanced path segment tracking for teleportation detection
     if (typeof flight !== 'undefined' && flight.recorder && flight.recorder.mapPath) {
       const currentMapPathLength = flight.recorder.mapPath.length;
-
-      // Detect path gaps (resume indicator) vs path collapse (teleportation)
-      if (currentMapPathLength > lastMapPathLength && lastMapPathLength > 0) {
-        // Path grew = normal continuation
-        pathGapDetected = false;
-      } else if (currentMapPathLength < lastMapPathLength && lastMapPathLength > 1) {
-        // Path shrank but we have history = potential gap/resume
+      if (currentMapPathLength < lastMapPathLength && lastMapPathLength > 1) {
         pathGapDetected = true;
-        console.log(`🔄 Path gap detected: ${lastMapPathLength} → ${currentMapPathLength}`);
       } else if (currentMapPathLength === 1 && lastMapPathLength > 2 && !pathGapDetected) {
-        // Path collapsed to single point when we had multiple = TELEPORTATION
         console.warn(`🚨 PATH COLLAPSE DETECTED: ${lastMapPathLength} paths → 1 path (teleportation signature)`);
         handleTeleportation();
         if (flightTerminated) {
           lastMapPathLength = currentMapPathLength;
           return;
         }
+      } else if (currentMapPathLength > lastMapPathLength) {
+        pathGapDetected = false;
       }
-
       lastMapPathLength = currentMapPathLength;
-
-      // Track path segments for resume detection
-      if (currentMapPathLength >= 2) {
-        mapPathSegments.push({
-          timestamp: now,
-          length: currentMapPathLength,
-          gapIndicated: pathGapDetected
-        });
-      }
     }
 
     if (flightStarted && lastPosition && !flightTerminated) {
@@ -242,7 +298,7 @@
       aircraft: getAircraftName(),
       firstGroundContact,
       departureAirportData,
-      flightPath: flightPath.slice(-50), // Keep last 50 points for resume continuity check
+      flightPath: flightPath.slice(-50),
       teleportWarnings: teleportWarnings,
       timestamp: Date.now()
     };
@@ -264,10 +320,7 @@
     return icao ? icao.toUpperCase().trim() : "UNKNOWN";
   }
 
-  function getAircraftName() {
-    let raw = geofs?.aircraft?.instance?.aircraftRecord?.name || "Unknown";
-    return raw.replace(/^\([^)]*\)\s*/, "");
-  }
+  // ====== AIRLINE & CODESHARE LOGIC ======
 
   function saveAirlines(airlines) {
     localStorage.setItem(AIRLINES_KEY, JSON.stringify(airlines));
@@ -275,11 +328,13 @@
 
   function loadAirlines() {
     const stored = localStorage.getItem(AIRLINES_KEY);
+    let airlines;
     if (stored) {
-      const airlines = JSON.parse(stored);
+      airlines = JSON.parse(stored);
+      // Upgrade logic for older data formats
       const firstKey = Object.keys(airlines)[0];
       if (firstKey && typeof airlines[firstKey] === 'string') {
-        console.log("📦 Upgrading airline data format...");
+        console.log("📦 Upgrading airline data format (string to object)...");
         const upgraded = {};
         for (const [name, webhook] of Object.entries(airlines)) {
           upgraded[name] = {
@@ -288,35 +343,38 @@
             iata: name === 'Default' ? 'GF' : 'UK'
           };
         }
-        saveAirlines(upgraded);
-        return upgraded;
-      }
-      if (firstKey && !airlines[firstKey].iata) {
+        airlines = upgraded;
+        saveAirlines(airlines);
+      } else if (firstKey && typeof airlines[firstKey] === 'object' && !airlines[firstKey].iata) {
         console.log("📦 Adding IATA field to existing airlines...");
         for (const [name, data] of Object.entries(airlines)) {
-          if (typeof data === 'object' && !data.iata) {
+          if (data && typeof data === 'object' && !data.iata) {
             data.iata = data.icao ? data.icao.substring(0, 2) : 'UK';
           }
         }
         saveAirlines(airlines);
       }
-      return airlines;
+    } else {
+      airlines = {
+        "Default": {
+          webhook: WEBHOOK_URL,
+          icao: "GFS",
+          iata: "GF"
+        }
+      };
     }
-    return {
-      "Default": {
-        webhook: WEBHOOK_URL,
-        icao: "GFS",
-        iata: "GF"
-      }
-    };
+    return airlines;
   }
 
-  function saveLastAirline(airlineName) {
-    localStorage.setItem(LAST_AIRLINE_KEY, airlineName);
+  function saveLastAirlines() {
+    const selectedNames = getSelectedAirlines();
+    localStorage.setItem(LAST_AIRLINES_KEY, JSON.stringify(selectedNames));
+    console.log(`💾 Saved airline selection: ${selectedNames.join(', ')}`);
   }
 
-  function loadLastAirline() {
-    return localStorage.getItem(LAST_AIRLINE_KEY);
+  function loadLastAirlines() {
+    const raw = localStorage.getItem(LAST_AIRLINES_KEY);
+    return raw ? JSON.parse(raw) : [];
   }
 
   function addNewAirline() {
@@ -342,26 +400,18 @@
       iata: iata.toUpperCase().trim()
     };
     saveAirlines(airlines);
-    updateAirlineSelect();
+    updateAirlineList();
     alert(`Added airline: ${name} (${icao.toUpperCase()}/${iata.toUpperCase()})`);
   }
 
   function editAirline() {
     const airlines = loadAirlines();
     const airlineNames = Object.keys(airlines);
-
     if (airlineNames.length === 0) {
       alert("No airlines to edit!");
       return;
     }
-
-    const airlineList = airlineNames.map(name => {
-      const data = airlines[name];
-      const icao = data.icao || (typeof data === 'string' ? 'UNK' : 'UNK');
-      const iata = data.iata || 'UK';
-      return typeof data === 'object' ? `${name} (${icao}/${iata})` : name;
-    }).join(", ");
-
+    const airlineList = airlineNames.map(name => `${name} (${airlines[name].icao}/${airlines[name].iata})`).join("\n");
     const selected = prompt(`Enter airline name to edit:\n${airlineList}`);
     if (!selected || !airlines[selected]) {
       alert("Airline not found!");
@@ -369,20 +419,13 @@
     }
 
     const currentData = airlines[selected];
-    const currentICAO = currentData.icao || (typeof currentData === 'string' ? 'UNK' : 'UNK');
-    const currentIATA = currentData.iata || 'UK';
-    const currentWebhook = typeof currentData === 'object' ? currentData.webhook : currentData;
-
     const newName = prompt(`Enter new airline name (current: ${selected}):`, selected);
     if (!newName) return;
-
-    const newICAO = prompt(`Enter new ICAO code (current: ${currentICAO}):`, currentICAO);
+    const newICAO = prompt(`Enter new ICAO code (current: ${currentData.icao}):`, currentData.icao);
     if (!newICAO) return;
-
-    const newIATA = prompt(`Enter new IATA code (current: ${currentIATA}):`, currentIATA);
+    const newIATA = prompt(`Enter new IATA code (current: ${currentData.iata}):`, currentData.iata);
     if (!newIATA) return;
-
-    const newWebhook = prompt(`Enter new webhook URL (current: ${currentWebhook}):`, currentWebhook);
+    const newWebhook = prompt(`Enter new webhook URL (current: ${currentData.webhook}):`, currentData.webhook);
     if (!newWebhook || !newWebhook.includes("discord.com/api/webhooks/")) {
       alert("Invalid webhook URL!");
       return;
@@ -391,7 +434,6 @@
     if (newName !== selected) {
       delete airlines[selected];
     }
-
     airlines[newName] = {
       webhook: newWebhook,
       icao: newICAO.toUpperCase().trim(),
@@ -399,145 +441,99 @@
     };
 
     saveAirlines(airlines);
-    updateAirlineSelect();
+    updateAirlineList();
     alert(`Updated airline: ${newName} (${newICAO.toUpperCase()}/${newIATA.toUpperCase()})`);
   }
 
   function removeAirline() {
     const airlines = loadAirlines();
     const airlineNames = Object.keys(airlines);
-
-    if (airlineNames.length <= 1) {
-      alert("Cannot remove the last airline!");
+    if (airlineNames.length === 0) {
+      alert("No airlines to remove!");
       return;
     }
-
-    const airlineList = airlineNames.map(name => {
-      const data = airlines[name];
-      const icao = data.icao || (typeof data === 'string' ? 'UNK' : 'UNK');
-      const iata = data.iata || 'UK';
-      return typeof data === 'object' ? `${name} (${icao}/${iata})` : name;
-    }).join(", ");
-
+    const airlineList = airlineNames.map(name => `${name} (${airlines[name].icao}/${airlines[name].iata})`).join("\n");
     const selected = prompt(`Enter airline name to remove:\n${airlineList}`);
     if (selected && airlines[selected]) {
+      if (Object.keys(airlines).length === 1) {
+        alert("Cannot remove the last airline!");
+        return;
+      }
       delete airlines[selected];
       saveAirlines(airlines);
-      updateAirlineSelect();
+      updateAirlineList();
       alert(`Removed airline: ${selected}`);
     } else {
       alert("Airline not found!");
     }
   }
 
-  function updateAirlineSelect() {
+  function updateAirlineList() {
     const airlines = loadAirlines();
-    const lastAirline = loadLastAirline();
+    const lastAirlines = loadLastAirlines();
+    airlineListContainer.innerHTML = "";
 
-    airlineSelect.innerHTML = "";
+    if (Object.keys(airlines).length === 0) {
+        airlineListContainer.innerHTML = `<span class="saw-no-airlines">No airlines configured. Please add one.</span>`;
+        return;
+    }
 
-    for (const [name, airlineData] of Object.entries(airlines)) {
-      const option = document.createElement("option");
+    for (const [name, data] of Object.entries(airlines)) {
+      const item = document.createElement("div");
+      item.className = "saw-airline-item";
 
-      if (typeof airlineData === 'string') {
-        option.value = airlineData;
-        option.textContent = name;
-      } else {
-        option.value = airlineData.webhook;
-        const icao = airlineData.icao || 'UNK';
-        const iata = airlineData.iata || 'UK';
-        option.textContent = `${name} (${icao}/${iata})`;
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.id = `saw-airline-${name}`;
+      checkbox.setAttribute('data-airline-name', name);
+      if (lastAirlines.includes(name)) {
+        checkbox.checked = true;
       }
 
-      option.setAttribute('data-airline-name', name);
-      airlineSelect.appendChild(option);
-    }
+      const label = document.createElement("label");
+      label.htmlFor = `saw-airline-${name}`;
+      label.textContent = `${name} (${data.icao}/${data.iata})`;
 
-    if (lastAirline) {
-      const targetOption = Array.from(airlineSelect.options).find(
-        option => option.getAttribute('data-airline-name') === lastAirline
-      );
-      if (targetOption) {
-        airlineSelect.value = targetOption.value;
-        console.log(`✅ Restored last selected airline: ${lastAirline}`);
-      }
-    }
-
-    airlineSelect.removeEventListener('change', airlineChangeHandler);
-    airlineSelect.addEventListener('change', airlineChangeHandler);
-  }
-
-  function airlineChangeHandler() {
-    const selectedOption = airlineSelect.options[airlineSelect.selectedIndex];
-    const airlineName = selectedOption.getAttribute('data-airline-name');
-    if (airlineName) {
-      saveLastAirline(airlineName);
-      console.log(`💾 Saved airline selection: ${airlineName}`);
+      item.appendChild(checkbox);
+      item.appendChild(label);
+      airlineListContainer.appendChild(item);
     }
   }
 
-  function getCurrentWebhookURL() {
-    const airlines = loadAirlines();
-    const selectedOption = airlineSelect.options[airlineSelect.selectedIndex];
-    const airlineName = selectedOption?.getAttribute('data-airline-name');
-
-    if (airlineName && airlines[airlineName]) {
-      const airlineData = airlines[airlineName];
-      return typeof airlineData === 'object' ? airlineData.webhook : airlineData;
-    }
-
-    return airlineSelect.value || WEBHOOK_URL;
-  }
-
-  function getCurrentAirlineICAO() {
-    const airlines = loadAirlines();
-    const selectedOption = airlineSelect.options[airlineSelect.selectedIndex];
-    const airlineName = selectedOption?.getAttribute('data-airline-name');
-
-    if (airlineName && airlines[airlineName]) {
-      const airlineData = airlines[airlineName];
-      return typeof airlineData === 'object' ? airlineData.icao : 'GFS';
-    }
-    return 'GFS';
-  }
-
-  function formatTimeWithTimezone(timestamp, airportData) {
-    let timeZone = 'UTC';
-    let suffix = 'UTC';
-
-    if (airportData && airportData.tz) {
-      timeZone = airportData.tz;
-      const date = new Date(timestamp);
-      const timezoneName = date.toLocaleDateString('en', {
-        timeZone: timeZone,
-        timeZoneName: 'short'
-      }).split(', ')[1] || timeZone.split('/')[1] || 'LT';
-      suffix = timezoneName;
-    }
-
-    const fmt = new Intl.DateTimeFormat('en-GB', {
-      timeZone: timeZone,
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
+  function getSelectedAirlines() {
+    const selected = [];
+    airlineListContainer.querySelectorAll('input[type="checkbox"]:checked').forEach(chk => {
+      selected.push(chk.getAttribute('data-airline-name'));
     });
-
-    return `${fmt.format(new Date(timestamp))} ${suffix}`;
+    return selected;
   }
 
-  function sendTerminationToDiscord() {
+  function getSelectedAirlineData() {
+    const airlines = loadAirlines();
+    const selectedNames = getSelectedAirlines();
+    const selectedData = [];
+    selectedNames.forEach(name => {
+        if (airlines[name]) {
+            selectedData.push(airlines[name]);
+        }
+    });
+    return selectedData;
+  }
+
+  function getSelectedWebhookURLs() {
+    return getSelectedAirlineData().map(data => data.webhook);
+  }
+
+  // ====== DISCORD LOGGING ======
+
+  function sendTerminationToDiscord(webhookUrl) {
     if (!callsignInput || !flightStartTime || !departureICAO) {
       console.warn("⚠️ Cannot send termination - missing flight data");
       return;
     }
 
-    const baseCallsign = callsignInput.value.trim() || "Unknown";
-    const airlineICAO = getCurrentAirlineICAO();
-    const pilot = baseCallsign.toUpperCase().startsWith(airlineICAO) ?
-      baseCallsign : `${airlineICAO}${baseCallsign}`;
+    // Use the callsign exactly as entered
+    const pilot = callsignInput.value.trim().toUpperCase() || "Unknown";
     const aircraft = getAircraftName();
     const durationMin = Math.round((Date.now() - flightStartTime) / 60000);
     const hours = Math.floor(durationMin / 60);
@@ -554,16 +550,8 @@
             value: `**Flight no.**: ${pilot}\n**Pilot name**: ${geofs?.userRecord?.callsign || "Unknown"}\n**Aircraft**: ${aircraft}`,
             inline: false
           },
-          {
-            name: "📍 Route",
-            value: `**Departure**: ${departureICAO}\n**Arrival**: TELEPORT`,
-            inline: true
-          },
-          {
-            name: "⏱️ Duration",
-            value: `**Flight Time**: ${formattedDuration}`,
-            inline: true
-          },
+          { name: "📍 Route", value: `**Departure**: ${departureICAO}\n**Arrival**: TELEPORT`, inline: true },
+          { name: "⏱️ Duration", value: `**Flight Time**: ${formattedDuration}`, inline: true },
           {
             name: "⚠️ Termination Reason",
             value: `**Multiple teleportations detected**\nFlight integrity compromised after 2 warnings.`,
@@ -571,14 +559,12 @@
           }
         ],
         timestamp: new Date().toISOString(),
-        footer: {
-          text: "GeoFS Flight Logger | Flight Not Logged"
-        }
+        footer: { text: "GeoFS Flight Logger | Flight Not Logged" }
       }]
     };
 
-    console.log("📤 Sending termination notice to Discord");
-    fetch(getCurrentWebhookURL(), {
+    console.log(`📤 Sending termination notice to ${webhookUrl.substring(0, 40)}...`);
+    fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(message)
@@ -586,7 +572,7 @@
       .catch(err => console.error("❌ Failed to send termination notice:", err));
   }
 
-  function sendLogToDiscord(data) {
+  function sendLogToDiscord(data, webhookUrl) {
     const takeoffTime = formatTimeWithTimezone(data.takeoff, departureAirportData);
     const landingTime = formatTimeWithTimezone(data.landing, arrivalAirportData);
 
@@ -596,7 +582,7 @@
       case "BUTTER": embedColor = 0x00FF00; break;
       case "ACCEPTABLE": embedColor = 0xFFFF00; break;
       case "HARD": embedColor = 0xFF8000; break;
-      case "CRASH": embedColor = 0xDC143C; break; // Crimson red for crash
+      case "CRASH": embedColor = 0xDC143C; break;
       default: embedColor = 0x0099FF; break;
     }
 
@@ -606,16 +592,8 @@
         value: `**Flight no.**: ${data.pilot}\n**Pilot name**: ${geofs?.userRecord?.callsign || "Unknown"}\n**Aircraft**: ${data.aircraft}`,
         inline: false
       },
-      {
-        name: "📍 Route",
-        value: `**Departure**: ${data.dep}\n**Arrival**: ${data.arr}`,
-        inline: true
-      },
-      {
-        name: "⏱️ Duration",
-        value: `**Flight Time**: ${data.duration}`,
-        inline: true
-      },
+      { name: "📍 Route", value: `**Departure**: ${data.dep}\n**Arrival**: ${data.arr}`, inline: true },
+      { name: "⏱️ Duration", value: `**Flight Time**: ${data.duration}`, inline: true },
       {
         name: "📊 Flight Data",
         value: `**V/S**: ${data.vs} fpm\n**G-Force**: ${data.gforce}\n**TAS**: ${data.ktrue} kts\n**GS**: ${data.gs} kts`,
@@ -654,48 +632,16 @@
       }]
     };
 
-    fetch(getCurrentWebhookURL(), {
+    console.log(`📤 Sending flight log to ${webhookUrl.substring(0, 40)}...`);
+    fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(message)
     }).then(() => console.log("✅ Flight log sent"))
-      .catch(console.error);
+      .catch(err => console.error("❌ Failed to send flight log:", err));
   }
 
-  function showToast(message, type = 'info', duration = 3000) {
-    const toast = document.createElement('div');
-    Object.assign(toast.style, {
-      position: 'fixed',
-      top: '20px',
-      right: '20px',
-      padding: '12px 20px',
-      borderRadius: '8px',
-      color: 'white',
-      fontWeight: 'bold',
-      fontSize: '14px',
-      fontFamily: 'sans-serif',
-      zIndex: '10001',
-      minWidth: '300px',
-      boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-      opacity: '0',
-      transform: 'translateX(100%)',
-      transition: 'all 0.3s ease-in-out'
-    });
-    switch(type) {
-      case 'crash': toast.style.background = 'linear-gradient(135deg, #ff4444, #cc0000)'; break;
-      case 'success': toast.style.background = 'linear-gradient(135deg, #00ff44, #00cc00)'; break;
-      case 'warning': toast.style.background = 'linear-gradient(135deg, #ffaa00, #ff8800)'; break;
-      default: toast.style.background = 'linear-gradient(135deg, #0099ff, #0066cc)';
-    }
-    toast.innerHTML = message;
-    document.body.appendChild(toast);
-    setTimeout(() => { toast.style.opacity = '1'; toast.style.transform = 'translateX(0)'; }, 10);
-    setTimeout(() => {
-      toast.style.opacity = '0';
-      toast.style.transform = 'translateX(100%)';
-      setTimeout(() => { if (document.body.contains(toast)) document.body.removeChild(toast); }, 300);
-    }, duration);
-  }
+  // ====== FLIGHT MONITORING ======
 
   function updateCalVertS() {
     if ((typeof geofs.animation.values != 'undefined' &&
@@ -736,12 +682,12 @@
       isGrounded = onGround;
     }
 
-    // Start flight only after passing 50 AGL (not 100)
+    // Start flight
     if (!flightStarted && !onGround && agl > 50) {
       flightStarted = true;
       flightStartTime = now;
       hasPassedThreshold25 = false;
-      teleportDetectionActive = true; // Start detecting immediately after takeoff
+      teleportDetectionActive = true;
       const nearestAirport = getNearestAirport(lat, lon);
       if (nearestAirport) {
         departureICAO = nearestAirport.icao;
@@ -756,27 +702,17 @@
       lastPositionTime = now;
       teleportWarnings = 0;
       flightTerminated = false;
-      pathContinuityBroken = false;
       resumeGracePeriod = false;
-      pathLengthHistory = [];
-      hasSeenMultiplePaths = false;
-      mapPathSegments = [];
       lastMapPathLength = 0;
       pathGapDetected = false;
       if (resumeGraceTimer) clearTimeout(resumeGraceTimer);
-      if (multiplePathsTimer) clearTimeout(multiplePathsTimer);
-
-      // Enable multiple paths detection immediately
-      hasSeenMultiplePaths = true;
-      console.log("📍 Multiple paths detection enabled (immediately after takeoff)");
 
       saveSession();
       console.log(`🛫 Departure detected at ${departureICAO} (AGL > 50ft)`);
-      console.log("📡 Teleportation detection ACTIVE (right after takeoff)");
+      console.log("📡 Teleportation detection ACTIVE");
       if (panelUI) {
         if (window.instruments && window.instruments.visible) {
-          panelUI.style.opacity = "0";
-          setTimeout(() => panelUI.style.display = "none", 500);
+          panelUI.classList.add('saw-hidden');
         }
       }
     }
@@ -787,22 +723,18 @@
       console.log("📡 Teleportation detection ACTIVE (after resume)");
     }
 
-    // Landing detection: trigger Landing Stats addon when AGL drops below 25
+    // Landing detection
     const elapsed = (now - flightStartTime) / 1000;
     const landingStatsActive = typeof window.statsOpen !== 'undefined' && window.statsOpen;
 
     if (flightStarted && !firstGroundContact && onGround && landingStatsActive && enhancedAGL >= 0 && enhancedAGL < 500) {
       if (elapsed < 1) return;
 
-      // Force recalculate V/S at exact landing moment to match Landing Stats addon timing
       const enhancedAGLNow = (values.altitude !== undefined && values.groundElevationFeet !== undefined) ?
         ((values.altitude - values.groundElevationFeet) +
          (geofs.aircraft.instance.collisionPoints[geofs.aircraft.instance.collisionPoints.length - 2].worldPosition[2] * 3.2808399))
         : 'N/A';
-
       const preciseCalVertS = (enhancedAGLNow - oldAGL) * (60000 / (now - oldTime));
-
-      // Use Landing Stats addon value if available and valid, otherwise use recalculated value
       const vs = (typeof window.calVertS !== 'undefined' && Math.abs(window.calVertS) < 5000)
         ? window.calVertS
         : Math.abs(preciseCalVertS) < 5000
@@ -810,28 +742,17 @@
         : values.verticalSpeed || 0;
 
       let quality;
-      if (vs >= -50) {
-        quality = "SUPER BUTTER";
-      } else if (vs >= -200) {
-        quality = "BUTTER";
-      } else if (vs >= -500) {
-        quality = "ACCEPTABLE";
-      } else if (vs >= -1000) {
-        quality = "HARD";
-      } else {
-        quality = "CRASH";
-      }
+      if (vs >= -50) quality = "SUPER BUTTER";
+      else if (vs >= -200) quality = "BUTTER";
+      else if (vs >= -500) quality = "ACCEPTABLE";
+      else if (vs >= -1000) quality = "HARD";
+      else quality = "CRASH";
 
       if (vs <= -1000 || vs > 200) {
         showToast("💥 CRASH DETECTED<br>Logging crash report...", 'crash', 4000);
         const nearestAirport = getNearestAirport(lat, lon);
-        if (nearestAirport) {
-          arrivalICAO = "Crash";
-          arrivalAirportData = nearestAirport;
-        } else {
-          arrivalICAO = "Crash";
-          arrivalAirportData = null;
-        }
+        arrivalICAO = "Crash";
+        arrivalAirportData = nearestAirport || null;
       } else {
         const nearestAirport = getNearestAirport(lat, lon);
         if (nearestAirport) {
@@ -844,8 +765,7 @@
       }
 
       console.log(`🛬 Arrival detected at ${arrivalICAO}`);
-      console.log(`📊 Landing data: V/S = ${vs.toFixed(1)} fpm (${typeof window.calVertS !== 'undefined' && Math.abs(window.calVertS) < 5000 ? 'landing-stats-calibrated' : calculatedVerticalSpeed !== 0 ? 'calculated' : 'geofs'}), Quality = ${quality}`);
-      console.log(`🛤️ Flight path points recorded: ${flightPath.length}`);
+      console.log(`📊 Landing data: V/S = ${vs.toFixed(1)} fpm, Quality = ${quality}`);
       if (teleportWarnings > 0) {
         console.warn(`⚠️ Teleportation warnings: ${teleportWarnings}`);
       }
@@ -856,24 +776,17 @@
       const g = (values.accZ / 9.80665).toFixed(2);
       const gs = values.groundSpeedKnt.toFixed(1);
       const tas = geofs.aircraft.instance.trueAirSpeed?.toFixed(1) || "N/A";
-
-      // Get bounces from Landing Stats addon if available
       const landingBounces = typeof window.bounces !== 'undefined' ? window.bounces : bounces;
 
-      const baseCallsign = callsignInput.value.trim() || "Unknown";
-      const airlineICAO = getCurrentAirlineICAO();
-      const pilot = baseCallsign.toUpperCase().startsWith(airlineICAO) ?
-        baseCallsign : `${airlineICAO}${baseCallsign}`;
+      // Use callsign exactly as entered
+      const pilot = callsignInput.value.trim().toUpperCase() || "Unknown";
       const aircraft = getAircraftName();
       const durationMin = Math.round((firstGroundTime - flightStartTime) / 60000);
-
       const hours = Math.floor(durationMin / 60);
       const minutes = durationMin % 60;
       const formattedDuration = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
 
-      console.log(`📤 Sending log to Discord: Pilot=${pilot}, Aircraft=${aircraft}, V/S=${vs.toFixed(1)}, Quality=${quality}`);
-
-      sendLogToDiscord({
+      const logData = {
         pilot, aircraft,
         takeoff: flightStartTime,
         landing: firstGroundTime,
@@ -887,15 +800,26 @@
         landingQuality: quality,
         bounces: landingBounces,
         teleportWarnings: teleportWarnings
-      });
+      };
 
-      saveSession();
-      clearSession();
+      // Send log to all selected webhooks
+      const urls = getSelectedWebhookURLs();
+      if (urls.length > 0) {
+        console.log(`📤 Sending log to ${urls.length} airline(s)...`);
+        urls.forEach(url => {
+          sendLogToDiscord(logData, url);
+        });
+      } else {
+        console.warn("⚠️ No airlines selected, flight log will not be sent.");
+        showToast("⚠️ No airlines selected<br>Flight log was not sent.", 'warning', 5000);
+      }
+
+      saveSession(); // Save final state
+      clearSession(); // Clear for next flight
       resetPanel();
 
       if (panelUI) {
-        panelUI.style.display = "block";
-        panelUI.style.opacity = "0.5";
+        panelUI.classList.remove('saw-hidden');
       }
 
       if (monitorInterval) {
@@ -931,26 +855,22 @@
     lastPositionTime = null;
     teleportWarnings = 0;
     flightTerminated = false;
-    pathContinuityBroken = false;
     resumeGracePeriod = false;
-    pathLengthHistory = [];
-    hasSeenMultiplePaths = false;
-    mapPathSegments = [];
     lastMapPathLength = 0;
     pathGapDetected = false;
     if (resumeGraceTimer) clearTimeout(resumeGraceTimer);
-    if (multiplePathsTimer) clearTimeout(multiplePathsTimer);
 
     callsignInput.value = "";
     startButton.disabled = true;
     startButton.innerText = "📋 Start Flight Logger";
     if (panelUI) {
       if (window.instruments && window.instruments.visible) {
-        panelUI.style.display = "block";
-        panelUI.style.opacity = "0.92";
+        panelUI.classList.remove('saw-hidden');
       }
     }
   }
+
+  // ====== UI & INITIALIZATION ======
 
   function hasAgreedToTerms() {
     return localStorage.getItem(TERMS_AGREED_KEY) === 'true';
@@ -1050,6 +970,181 @@
     });
   }
 
+  function injectStyles() {
+    const style = document.createElement('style');
+    style.innerHTML = `
+      :root {
+        --saw-bg: rgba(20, 20, 20, 0.95);
+        --saw-header-bg: rgba(0, 0, 0, 0.8);
+        --saw-border: #444;
+        --saw-text: #eee;
+        --saw-text-label: #aaa;
+        --saw-input-bg: #222;
+        --saw-input-border: #555;
+        --saw-btn-primary: #0099ff;
+        --saw-btn-primary-hover: #00bfff;
+        --saw-btn-secondary: #3a3a3a;
+        --saw-btn-secondary-hover: #4a4a4a;
+        --saw-btn-green: #008800;
+        --saw-btn-green-hover: #00aa00;
+        --saw-btn-blue: #0066aa;
+        --saw-btn-blue-hover: #0088cc;
+        --saw-btn-red: #aa0000;
+        --saw-btn-red-hover: #cc0000;
+      }
+      #sawLoggerPanel {
+        position: absolute;
+        bottom: 50px;
+        left: 10px;
+        width: 240px;
+        background: var(--saw-bg);
+        color: var(--saw-text);
+        border: 1px solid var(--saw-border);
+        border-radius: 8px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        font-family: sans-serif;
+        font-size: 14px;
+        z-index: 21;
+        overflow: hidden;
+        transition: opacity 0.3s ease, transform 0.3s ease;
+        opacity: 1;
+        display: block;
+      }
+      #sawLoggerPanel.saw-hidden {
+        opacity: 0;
+        pointer-events: none;
+        transform: scale(0.95);
+      }
+      #sawLoggerPanel .saw-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 12px;
+        background: var(--saw-header-bg);
+        border-bottom: 1px solid var(--saw-border);
+        cursor: grab;
+      }
+      #sawLoggerPanel .saw-header span {
+        font-weight: bold;
+        color: #00C8FF;
+      }
+      #sawLoggerPanel .saw-header #sawToggleBtn {
+        width: 20px;
+        height: 20px;
+        background: var(--saw-btn-secondary);
+        color: var(--saw-text);
+        border: 1px solid var(--saw-border);
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 16px;
+        line-height: 16px;
+        padding: 0;
+      }
+      #sawLoggerPanel .saw-content {
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        transition: all 0.3s ease-out;
+        max-height: 500px;
+      }
+      #sawLoggerPanel.saw-collapsed .saw-content {
+        max-height: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+        overflow: hidden;
+      }
+      #sawLoggerPanel label {
+        font-size: 12px;
+        color: var(--saw-text-label);
+        font-weight: bold;
+      }
+      #sawLoggerPanel input[type="text"],
+      #sawLoggerPanel select {
+        width: 100%;
+        padding: 8px;
+        background: var(--saw-input-bg);
+        border: 1px solid var(--saw-input-border);
+        border-radius: 4px;
+        color: var(--saw-text);
+        box-sizing: border-box; /* Important */
+      }
+      #sawLoggerPanel #sawAirlineList {
+        max-height: 150px;
+        overflow-y: auto;
+        background: var(--saw-input-bg);
+        border: 1px solid var(--saw-input-border);
+        border-radius: 4px;
+        padding: 8px;
+      }
+      #sawLoggerPanel .saw-airline-item {
+        display: flex;
+        align-items: center;
+        padding: 4px;
+      }
+      #sawLoggerPanel .saw-airline-item input[type="checkbox"] {
+        margin-right: 8px;
+        accent-color: var(--saw-btn-primary);
+      }
+      #sawLoggerPanel .saw-airline-item label {
+        font-size: 13px;
+        color: var(--saw-text);
+        font-weight: normal;
+        cursor: pointer;
+      }
+      #sawLoggerPanel .saw-no-airlines {
+        font-style: italic;
+        color: var(--saw-text-label);
+      }
+      #sawLoggerPanel .saw-airline-buttons {
+        display: flex;
+        gap: 5px;
+      }
+      #sawLoggerPanel button {
+        padding: 8px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+        transition: background-color 0.2s ease;
+      }
+      #sawLoggerPanel .saw-airline-buttons button {
+        flex: 1;
+        font-size: 11px;
+        color: white;
+      }
+      #sawAddAirline { background: var(--saw-btn-green); }
+      #sawAddAirline:hover { background: var(--saw-btn-green-hover); }
+      #sawEditAirline { background: var(--saw-btn-blue); }
+      #sawEditAirline:hover { background: var(--saw-btn-blue-hover); }
+      #sawRemoveAirline { background: var(--saw-btn-red); }
+      #sawRemoveAirline:hover { background: var(--saw-btn-red-hover); }
+
+      #sawStartButton {
+        background: var(--saw-btn-primary);
+        color: white;
+        font-size: 14px;
+      }
+      #sawStartButton:hover { background: var(--saw-btn-primary-hover); }
+      #sawStartButton:disabled {
+        background: var(--saw-btn-secondary);
+        color: var(--saw-text-label);
+        cursor: not-allowed;
+      }
+      #sawResumeButton {
+        background: var(--saw-btn-secondary);
+        color: white;
+      }
+      #sawResumeButton:hover { background: var(--saw-btn-secondary-hover); }
+      #sawResumeButton:disabled {
+        background: var(--saw-btn-green);
+        color: white;
+        cursor: not-allowed;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
   function disableKeyPropagation(input) {
     ["keydown", "keyup", "keypress"].forEach(ev =>
       input.addEventListener(ev, e => e.stopPropagation())
@@ -1057,129 +1152,76 @@
   }
 
   function createSidePanel() {
+    injectStyles();
+
     panelUI = document.createElement("div");
-    Object.assign(panelUI.style, {
-      position: "absolute",
-      bottom: "50px",
-      left: "10px",
-      background: "#111",
-      color: "white",
-      padding: "10px",
-      border: "2px solid white",
-      zIndex: "21",
-      width: "220px",
-      fontSize: "14px",
-      fontFamily: "sans-serif",
-      transition: "opacity 0.5s ease",
-      display: "block",
-      opacity: "0.5"
-    });
+    panelUI.id = "sawLoggerPanel";
 
-    const airlineLabel = document.createElement("div");
-    airlineLabel.textContent = "Airline:";
-    airlineLabel.style.marginBottom = "3px";
-    airlineLabel.style.fontSize = "12px";
-    panelUI.appendChild(airlineLabel);
+    panelUI.innerHTML = `
+      <div class="saw-header">
+        <span>SAW Flight Logger</span>
+        <button id="sawToggleBtn">−</button>
+      </div>
+      <div class="saw-content">
+        <label for="sawCallsign">Full Callsign:</label>
+        <input id="sawCallsign" type="text" placeholder="e.g., EVA123">
+        
+        <label>Airlines (Codeshare):</label>
+        <div id="sawAirlineList">
+          <!-- Checkboxes will be populated here -->
+        </div>
+        
+        <div class="saw-airline-buttons">
+          <button id="sawAddAirline">+ Add</button>
+          <button id="sawEditAirline">✎ Edit</button>
+          <button id="sawRemoveAirline">− Remove</button>
+        </div>
+        
+        <button id="sawStartButton" disabled>📋 Start Logger</button>
+        <button id="sawResumeButton">⏪ Resume Last Flight</button>
+      </div>
+    `;
+    document.body.appendChild(panelUI);
 
-    airlineSelect = document.createElement("select");
-    airlineSelect.style.width = "100%";
-    airlineSelect.style.marginBottom = "6px";
-    panelUI.appendChild(airlineSelect);
+    // Assign UI elements to variables
+    contentUI = panelUI.querySelector('.saw-content');
+    callsignInput = document.getElementById('sawCallsign');
+    airlineListContainer = document.getElementById('sawAirlineList');
+    startButton = document.getElementById('sawStartButton');
+    resumeBtn = document.getElementById('sawResumeButton');
+    toggleBtn = document.getElementById('sawToggleBtn');
 
-    const airlineButtons = document.createElement("div");
-    airlineButtons.style.display = "flex";
-    airlineButtons.style.gap = "3px";
-    airlineButtons.style.marginBottom = "6px";
+    // Add event listeners
+    document.getElementById('sawAddAirline').onclick = addNewAirline;
+    document.getElementById('sawEditAirline').onclick = editAirline;
+    document.getElementById('sawRemoveAirline').onclick = removeAirline;
 
-    const addAirlineBtn = document.createElement("button");
-    addAirlineBtn.textContent = "+ Add";
-    Object.assign(addAirlineBtn.style, {
-      flex: "1",
-      padding: "3px",
-      background: "#006600",
-      color: "white",
-      border: "1px solid white",
-      cursor: "pointer",
-      fontSize: "9px"
-    });
-    addAirlineBtn.onclick = addNewAirline;
-
-    const editAirlineBtn = document.createElement("button");
-    editAirlineBtn.textContent = "Modify";
-    Object.assign(editAirlineBtn.style, {
-      flex: "1",
-      padding: "3px",
-      background: "#0066aa",
-      color: "white",
-      border: "1px solid white",
-      cursor: "pointer",
-      fontSize: "9px"
-    });
-    editAirlineBtn.onclick = editAirline;
-
-    const removeAirlineBtn = document.createElement("button");
-    removeAirlineBtn.textContent = "- Remove";
-    Object.assign(removeAirlineBtn.style, {
-      flex: "1",
-      padding: "3px",
-      background: "#660000",
-      color: "white",
-      border: "1px solid white",
-      cursor: "pointer",
-      fontSize: "9px"
-    });
-    removeAirlineBtn.onclick = removeAirline;
-
-    airlineButtons.appendChild(addAirlineBtn);
-    airlineButtons.appendChild(editAirlineBtn);
-    airlineButtons.appendChild(removeAirlineBtn);
-    panelUI.appendChild(airlineButtons);
-
-    callsignInput = document.createElement("input");
-    callsignInput.placeholder = "Callsign";
-    callsignInput.style.width = "100%";
-    callsignInput.style.marginBottom = "6px";
     disableKeyPropagation(callsignInput);
     callsignInput.onkeyup = () => {
       startButton.disabled = callsignInput.value.trim() === "";
     };
-    startButton = document.createElement("button");
-    startButton.innerText = "📋 Start Flight Logger";
-    startButton.disabled = true;
-    Object.assign(startButton.style, {
-      width: "100%",
-      padding: "6px",
-      background: "#333",
-      color: "white",
-      border: "1px solid white",
-      cursor: "pointer"
+
+    airlineListContainer.addEventListener('change', (e) => {
+        if (e.target.type === 'checkbox') {
+            saveLastAirlines();
+        }
     });
 
     startButton.onclick = () => {
+      if (getSelectedAirlines().length === 0) {
+        alert("Please select at least one airline to log this flight.");
+        return;
+      }
       alert("Flight Logger activated! Start your flight when ready.");
       monitorInterval = setInterval(monitorFlight, 1000);
       setInterval(updateCalVertS, 25);
       startButton.innerText = "✅ Logger Running...";
       startButton.disabled = true;
+      resumeBtn.disabled = true;
     };
 
-    panelUI.appendChild(callsignInput);
-    panelUI.appendChild(startButton);
-
-    const resumeSession = loadSession();
-    const resumeBtn = document.createElement("button");
-    resumeBtn.innerText = "⏪ Resume Last Flight";
-    Object.assign(resumeBtn.style, {
-      width: "100%",
-      marginTop: "6px",
-      padding: "6px",
-      background: "#222",
-      color: "white",
-      border: "1px solid white",
-      cursor: "pointer"
-    });
-
     resumeBtn.onclick = () => {
+      const resumeSession = loadSession();
       if (resumeSession) {
         flightStarted = true;
         flightStartTime = resumeSession.flightStartTime;
@@ -1191,23 +1233,12 @@
         flightPath = resumeSession.flightPath || [];
         teleportWarnings = resumeSession.teleportWarnings || 0;
         flightTerminated = false;
-        pathContinuityBroken = false;
-
-        // Enable grace period for resume to avoid false teleport detection
         resumeGracePeriod = true;
-        pathLengthHistory = [];
-        hasSeenMultiplePaths = false;
-        if (multiplePathsTimer) clearTimeout(multiplePathsTimer);
 
         resumeGraceTimer = setTimeout(() => {
           resumeGracePeriod = false;
           console.log("📍 Resume grace period ended, teleportation detection active");
         }, 5000);
-
-        multiplePathsTimer = setTimeout(() => {
-          hasSeenMultiplePaths = true;
-          console.log("📍 Multiple paths detection enabled after 15s");
-        }, 15000);
 
         if (flightPath.length > 0) {
           const lastPoint = flightPath[flightPath.length - 1];
@@ -1224,22 +1255,32 @@
         startButton.disabled = true;
         console.log("🔁 Resumed flight session.");
         if (panelUI && window.instruments && window.instruments.visible) {
-          panelUI.style.opacity = "0";
-          setTimeout(() => panelUI.style.display = "none", 500);
+          panelUI.classList.add('saw-hidden');
         }
       } else {
         alert("❌ No previous session found.");
       }
     };
 
-    panelUI.appendChild(resumeBtn);
-    document.body.appendChild(panelUI);
-    updateAirlineSelect();
+    toggleBtn.onclick = () => {
+        panelUI.classList.toggle('saw-collapsed');
+        toggleBtn.innerText = panelUI.classList.contains('saw-collapsed') ? '+' : '−';
+    };
+
+    updateAirlineList();
   }
 
   function updatePanelVisibility() {
     if (panelUI) {
-      panelUI.style.display = (window.instruments && window.instruments.visible) ? "block" : "none";
+      const isVisible = (window.instruments && window.instruments.visible);
+      panelUI.style.display = isVisible ? "block" : "none";
+      
+      // Also hide if flight is started
+      if (isVisible && flightStarted && !flightTerminated && !firstGroundContact) {
+         panelUI.classList.add('saw-hidden');
+      } else if (isVisible && (!flightStarted || firstGroundContact)) {
+         panelUI.classList.remove('saw-hidden');
+      }
     }
     setTimeout(updatePanelVisibility, 100);
   }
@@ -1249,80 +1290,67 @@
     if (resumeSession && resumeSession.flightStarted && resumeSession.callsign) {
       const sessionAge = (Date.now() - resumeSession.timestamp) / (1000 * 60);
 
-      // Session age check removed - can resume sessions of any age
-      if (true) {
-        console.log(`🔄 Auto-resuming flight session: ${resumeSession.callsign} from ${resumeSession.departureICAO}`);
+      console.log(`🔄 Auto-resuming flight session: ${resumeSession.callsign} from ${resumeSession.departureICAO}`);
 
-        flightStarted = true;
-        flightStartTime = resumeSession.flightStartTime;
-        departureICAO = resumeSession.departureICAO;
-        departureAirportData = resumeSession.departureAirportData;
-        firstGroundContact = resumeSession.firstGroundContact || false;
+      flightStarted = true;
+      flightStartTime = resumeSession.flightStartTime;
+      departureICAO = resumeSession.departureICAO;
+      departureAirportData = resumeSession.departureAirportData;
+      firstGroundContact = resumeSession.firstGroundContact || false;
 
-        flightPath = resumeSession.flightPath || [];
-        teleportWarnings = resumeSession.teleportWarnings || 0;
-        flightTerminated = false;
-        pathContinuityBroken = false;
+      flightPath = resumeSession.flightPath || [];
+      teleportWarnings = resumeSession.teleportWarnings || 0;
+      flightTerminated = false;
+      resumeGracePeriod = true;
 
-        resumeGracePeriod = true;
-        pathLengthHistory = [];
-        hasSeenMultiplePaths = false;
-        if (multiplePathsTimer) clearTimeout(multiplePathsTimer);
+      resumeGraceTimer = setTimeout(() => {
+        resumeGracePeriod = false;
+        console.log("📍 Resume grace period ended, teleportation detection active");
+      }, 5000);
 
-        resumeGraceTimer = setTimeout(() => {
-          resumeGracePeriod = false;
-          console.log("📍 Resume grace period ended, teleportation detection active");
-        }, 5000);
-
-        multiplePathsTimer = setTimeout(() => {
-          hasSeenMultiplePaths = true;
-          console.log("📍 Multiple paths detection enabled after 15s");
-        }, 15000);
-
-        if (flightPath.length > 0) {
-          const lastPoint = flightPath[flightPath.length - 1];
-          lastPosition = { lat: lastPoint.lat, lon: lastPoint.lon, altitude: lastPoint.alt };
-          lastPositionTime = lastPoint.time;
-          console.log("🔗 Path continuity restored from saved data");
-        }
-
-        if (callsignInput) {
-          callsignInput.value = resumeSession.callsign || "";
-        }
-
-        monitorInterval = setInterval(monitorFlight, 1000);
-        setInterval(updateCalVertS, 25);
-
-        if (startButton) {
-          startButton.innerText = "✅ Logger Running...";
-          startButton.disabled = true;
-        }
-
-        const flightDuration = Math.floor((Date.now() - flightStartTime) / 60000);
-        showToast(
-          `🔄 Flight auto-resumed: ${resumeSession.callsign}<br>📍 From: ${resumeSession.departureICAO}<br>⏱️ Duration: ${flightDuration}min`,
-          'success',
-          6000
-        );
-
-        if (panelUI && window.instruments && window.instruments.visible) {
-          panelUI.style.opacity = "0";
-          setTimeout(() => panelUI.style.display = "none", 500);
-        }
-
-        return true;
-      } else {
-        console.log(`⏰ Session too old (${Math.floor(sessionAge / 60)}h ${Math.floor(sessionAge % 60)}m), not auto-resuming`);
-        clearSession();
+      if (flightPath.length > 0) {
+        const lastPoint = flightPath[flightPath.length - 1];
+        lastPosition = { lat: lastPoint.lat, lon: lastPoint.lon, altitude: lastPoint.alt };
+        lastPositionTime = lastPoint.time;
+        console.log("🔗 Path continuity restored from saved data");
       }
+
+      if (callsignInput) {
+        callsignInput.value = resumeSession.callsign || "";
+      }
+
+      monitorInterval = setInterval(monitorFlight, 1000);
+      setInterval(updateCalVertS, 25);
+
+      if (startButton) {
+        startButton.innerText = "✅ Logger Running...";
+        startButton.disabled = true;
+      }
+      if (resumeBtn) {
+        resumeBtn.innerText = "✅ Resumed!";
+        resumeBtn.disabled = true;
+      }
+
+      const flightDuration = Math.floor((Date.now() - flightStartTime) / 60000);
+      showToast(
+        `🔄 Flight auto-resumed: ${resumeSession.callsign}<br>📍 From: ${resumeSession.departureICAO}<br>⏱️ Duration: ${flightDuration}min`,
+        'success',
+        6000
+      );
+
+      if (panelUI && window.instruments && window.instruments.visible) {
+        panelUI.classList.add('saw-hidden');
+      }
+      return true;
     }
     return false;
   }
 
+  // ====== SCRIPT ENTRYPOINT ======
   window.addEventListener("load", () => {
-    console.log("✅ GeoFS SAW Flight Logger (Auto ICAO, CDN JSON) Loaded");
+    console.log("✅ GeoFS SAW Flight Logger (Improved UI, Codeshare) Loaded");
 
-    if (localStorage.getItem(TERMS_AGREED_KEY) === 'true') {
+    if (hasAgreedToTerms()) {
       console.log("✅ SAW system terms already agreed, initializing Flight Logger");
       createSidePanel();
       setTimeout(updatePanelVisibility, 1000);
@@ -1334,4 +1362,5 @@
       setTimeout(showTermsDialog, 2000);
     }
   });
+
 })();
